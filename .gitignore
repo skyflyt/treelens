@@ -1,0 +1,53 @@
+# ============================================================
+# SECRETS — defensive only. This repo must NEVER contain any.
+# These patterns should never match anything; that's the point.
+# See AGENTS.md for the strict no-secrets rule.
+# ============================================================
+.env
+.env.*
+*.env
+secrets*
+*secret*
+*.key
+*.pem
+*.pfx
+*.p12
+*.crt.key
+credentials*
+token*
+*.token
+
+# --- Rust / Cargo ---
+target/
+**/*.rs.bk
+
+# --- Node / frontend (Vite) ---
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# --- Tauri build outputs ---
+src-tauri/target/
+src-tauri/gen/
+
+# --- Test / bench artifacts ---
+coverage/
+*.profraw
+
+# --- IDE / editor noise ---
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.user
+*.swp
+
+# --- OS noise ---
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# --- Local app config produced by running a dev build in-tree ---
+treelens.config.json
+*.log
