@@ -31,6 +31,7 @@ tauri-plugin-opener = "2"
 scanner = { path = "../crates/scanner" }
 tree = { path = "../crates/tree" }
 fileops = { path = "../crates/fileops" }
+analysis = { path = "../crates/analysis" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true }

@@ -54,6 +54,7 @@ impl<E: std::fmt::Display> From<E> for CommandError {
 #[tauri::command]
 async fn scan_start(
     path: String,
+    tab: u32,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), CommandError> {
@@ -84,9 +85,24 @@ async fn scan_start(
     let app_for_collector = app.clone();
     let state_arc = state.inner().clone_handle();
     thread::spawn(move || {
-        collect_scan(app_for_collector, state_arc, root, rec_rx, evt_rx, handle);
+        collect_scan(
+            app_for_collector,
+            state_arc,
+            tab,
+            root,
+            rec_rx,
+            evt_rx,
+            handle,
+        );
     });
 
+    Ok(())
+}
+
+/// Close a tab, freeing its scanned tree.
+#[tauri::command]
+fn close_tab(tab: u32, state: State<'_, AppState>) -> Result<(), CommandError> {
+    state.tabs.write().remove(&tab);
     Ok(())
 }
 
@@ -99,9 +115,11 @@ fn scan_cancel(state: State<'_, AppState>) -> Result<(), CommandError> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_scan(
     app: AppHandle,
     state: Arc<AppStateInner>,
+    tab: u32,
     root: PathBuf,
     rec_rx: Receiver<scanner::Record>,
     evt_rx: Receiver<ScanEvent>,
@@ -141,8 +159,6 @@ fn collect_scan(
     let _ = handle.join();
 
     if cancelled {
-        *state.scan_path.lock() = None;
-        *state.tree.write() = None;
         let _ = app.emit("scan:cancelled", ());
         return;
     }
@@ -153,8 +169,13 @@ fn collect_scan(
     let files = tree.nodes[root_idx as usize].file_count;
     let dirs = tree.nodes[root_idx as usize].dir_count;
     let nodes = tree.nodes.len() as u32;
-    *state.scan_path.lock() = Some(root.clone());
-    *state.tree.write() = Some(tree);
+    state.tabs.write().insert(
+        tab,
+        TabData {
+            tree,
+            scan_path: root.clone(),
+        },
+    );
     *state.last_progress.lock() = last_progress;
     let payload = ScanCompletePayload {
         root_idx,
@@ -168,8 +189,23 @@ fn collect_scan(
     let _ = app.emit("scan:complete", payload);
 }
 
+/// Run a read-only closure against the tree of tab `tab`. Central place that
+/// resolves a tab id to its tree (or a "no scan loaded" error).
+fn with_tree<T>(
+    state: &AppStateInner,
+    tab: u32,
+    f: impl FnOnce(&Tree) -> Result<T, CommandError>,
+) -> Result<T, CommandError> {
+    let tabs = state.tabs.read();
+    let td = tabs.get(&tab).ok_or_else(|| CommandError {
+        message: "no scan loaded".into(),
+    })?;
+    f(&td.tree)
+}
+
 #[tauri::command]
 fn list_dir(
+    tab: u32,
     parent: u32,
     sort: String,
     offset: usize,
@@ -178,36 +214,32 @@ fn list_dir(
     state: State<'_, AppState>,
 ) -> Result<Vec<DirRow>, CommandError> {
     let _timer = TimedSpan::new("list_dir");
-    let tree_guard = state.tree.read();
-    let tree = tree_guard.as_ref().ok_or_else(|| CommandError {
-        message: "no scan loaded".into(),
-    })?;
-    if parent as usize >= tree.nodes.len() {
-        return Err(CommandError {
-            message: format!("invalid parent {parent}"),
-        });
-    }
-    Ok(tree::list_dir(
-        tree,
-        parent,
-        parse_sort(&sort),
-        offset,
-        limit,
-        parse_mode(&size_mode),
-    ))
+    with_tree(state.inner(), tab, |tree| {
+        if parent as usize >= tree.nodes.len() {
+            return Err(CommandError {
+                message: format!("invalid parent {parent}"),
+            });
+        }
+        Ok(tree::list_dir(
+            tree,
+            parent,
+            parse_sort(&sort),
+            offset,
+            limit,
+            parse_mode(&size_mode),
+        ))
+    })
 }
 
 #[tauri::command]
-fn child_count(parent: u32, state: State<'_, AppState>) -> Result<usize, CommandError> {
-    let tree_guard = state.tree.read();
-    let tree = tree_guard.as_ref().ok_or_else(|| CommandError {
-        message: "no scan loaded".into(),
-    })?;
-    Ok(tree::dir_count(tree, parent))
+fn child_count(tab: u32, parent: u32, state: State<'_, AppState>) -> Result<usize, CommandError> {
+    with_tree(state.inner(), tab, |tree| Ok(tree::dir_count(tree, parent)))
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn treemap_layout(
+    tab: u32,
     root: u32,
     width: f32,
     height: f32,
@@ -217,28 +249,26 @@ fn treemap_layout(
     state: State<'_, AppState>,
 ) -> Result<Vec<Rect>, CommandError> {
     let _timer = TimedSpan::new("treemap_layout");
-    let tree_guard = state.tree.read();
-    let tree = tree_guard.as_ref().ok_or_else(|| CommandError {
-        message: "no scan loaded".into(),
-    })?;
-    if root as usize >= tree.nodes.len() {
-        return Err(CommandError {
-            message: format!("invalid root {root}"),
-        });
-    }
-    let opts = LayoutOpts {
-        width,
-        height,
-        min_px,
-        max_depth,
-        padding: 1.0,
-    };
-    Ok(tree::treemap_layout(
-        tree,
-        root,
-        opts,
-        parse_mode(&size_mode),
-    ))
+    with_tree(state.inner(), tab, |tree| {
+        if root as usize >= tree.nodes.len() {
+            return Err(CommandError {
+                message: format!("invalid root {root}"),
+            });
+        }
+        let opts = LayoutOpts {
+            width,
+            height,
+            min_px,
+            max_depth,
+            padding: 1.0,
+        };
+        Ok(tree::treemap_layout(
+            tree,
+            root,
+            opts,
+            parse_mode(&size_mode),
+        ))
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -249,20 +279,19 @@ struct TopNResponse {
 
 #[tauri::command]
 fn top_n(
+    tab: u32,
     root: u32,
     n: usize,
     size_mode: String,
     state: State<'_, AppState>,
 ) -> Result<TopNResponse, CommandError> {
     let _timer = TimedSpan::new("top_n");
-    let tree_guard = state.tree.read();
-    let tree = tree_guard.as_ref().ok_or_else(|| CommandError {
-        message: "no scan loaded".into(),
-    })?;
-    let mode = parse_mode(&size_mode);
-    Ok(TopNResponse {
-        files: tree::top_files(tree, root, n, mode),
-        dirs: tree::top_dirs(tree, root, n, mode),
+    with_tree(state.inner(), tab, |tree| {
+        let mode = parse_mode(&size_mode);
+        Ok(TopNResponse {
+            files: tree::top_files(tree, root, n, mode),
+            dirs: tree::top_dirs(tree, root, n, mode),
+        })
     })
 }
 
@@ -273,16 +302,18 @@ struct BreadcrumbEntry {
 }
 
 #[tauri::command]
-fn breadcrumb(idx: u32, state: State<'_, AppState>) -> Result<Vec<BreadcrumbEntry>, CommandError> {
-    let tree_guard = state.tree.read();
-    let tree = tree_guard.as_ref().ok_or_else(|| CommandError {
-        message: "no scan loaded".into(),
-    })?;
-    Ok(tree
-        .path(idx)
-        .into_iter()
-        .map(|(i, n)| BreadcrumbEntry { idx: i, name: n })
-        .collect())
+fn breadcrumb(
+    tab: u32,
+    idx: u32,
+    state: State<'_, AppState>,
+) -> Result<Vec<BreadcrumbEntry>, CommandError> {
+    with_tree(state.inner(), tab, |tree| {
+        Ok(tree
+            .path(idx)
+            .into_iter()
+            .map(|(i, n)| BreadcrumbEntry { idx: i, name: n })
+            .collect())
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -302,53 +333,62 @@ struct NodeSummary {
 }
 
 #[tauri::command]
-fn node_summary(idx: u32, state: State<'_, AppState>) -> Result<NodeSummary, CommandError> {
-    let tree_guard = state.tree.read();
-    let tree = tree_guard.as_ref().ok_or_else(|| CommandError {
-        message: "no scan loaded".into(),
-    })?;
-    let path = node_path(state.inner(), idx)?;
-    let n = &tree.nodes[idx as usize];
-    Ok(NodeSummary {
-        idx,
-        name: n.name.clone(),
-        full_path: path.to_string_lossy().to_string(),
-        is_dir: n.is_dir(),
-        is_reparse: n.is_reparse(),
-        allocated: n.allocated,
-        logical: n.logical,
-        file_count: n.file_count,
-        dir_count: n.dir_count,
-        mtime: n.mtime,
-        newest_mtime: n.newest_mtime,
-        oldest_mtime: n.oldest_mtime,
+fn node_summary(
+    tab: u32,
+    idx: u32,
+    state: State<'_, AppState>,
+) -> Result<NodeSummary, CommandError> {
+    let path = node_path(state.inner(), tab, idx)?;
+    with_tree(state.inner(), tab, |tree| {
+        let n = &tree.nodes[idx as usize];
+        Ok(NodeSummary {
+            idx,
+            name: n.name.clone(),
+            full_path: path.to_string_lossy().to_string(),
+            is_dir: n.is_dir(),
+            is_reparse: n.is_reparse(),
+            allocated: n.allocated,
+            logical: n.logical,
+            file_count: n.file_count,
+            dir_count: n.dir_count,
+            mtime: n.mtime,
+            newest_mtime: n.newest_mtime,
+            oldest_mtime: n.oldest_mtime,
+        })
     })
 }
 
-fn node_path(state: &AppStateInner, idx: u32) -> Result<PathBuf, CommandError> {
-    let tree_guard = state.tree.read();
-    let tree = tree_guard.as_ref().ok_or_else(|| CommandError {
+/// Resolve a node idx within tab `tab` to its absolute filesystem path.
+fn node_path(state: &AppStateInner, tab: u32, idx: u32) -> Result<PathBuf, CommandError> {
+    let tabs = state.tabs.read();
+    let td = tabs.get(&tab).ok_or_else(|| CommandError {
         message: "no scan loaded".into(),
     })?;
-    let scan_path = state.scan_path.lock().clone().ok_or_else(|| CommandError {
-        message: "no scan path".into(),
-    })?;
-    let mut segments: Vec<String> = tree.path(idx).into_iter().map(|(_, n)| n).collect();
-    // The first segment is the root node's recorded name; we drop it and join the rest
-    // onto the actual scan root (handles things like "C:\" vs name="C:").
+    let mut segments: Vec<String> = td.tree.path(idx).into_iter().map(|(_, n)| n).collect();
+    // The first segment is the root node's recorded name; drop it and join the
+    // rest onto the actual scan root (handles "C:\" vs name="C:").
     if !segments.is_empty() {
         segments.remove(0);
     }
-    let mut p = scan_path;
+    let mut p = td.scan_path.clone();
     for seg in segments {
         p.push(seg);
     }
     Ok(p)
 }
 
+fn rescan_path_of(state: &AppStateInner, tab: u32) -> Result<String, CommandError> {
+    let tabs = state.tabs.read();
+    tabs.get(&tab)
+        .map(|td| td.scan_path.to_string_lossy().to_string())
+        .ok_or_else(|| CommandError {
+            message: "no active scan".into(),
+        })
+}
+
 #[tauri::command]
-fn open_in_explorer(idx: u32, state: State<'_, AppState>) -> Result<(), CommandError> {
-    let path = node_path(state.inner(), idx)?;
+fn open_in_explorer(tab: u32, idx: u32, state: State<'_, AppState>) -> Result<(), CommandError> {
+    let path = node_path(state.inner(), tab, idx)?;
     fileops::open_in_explorer(&path).map_err(|e| CommandError {
         message: format!("{e}"),
     })?;
@@ -356,8 +396,8 @@ fn open_in_explorer(idx: u32, state: State<'_, AppState>) -> Result<(), CommandE
 }
 
 #[tauri::command]
-fn open_in_terminal(idx: u32, state: State<'_, AppState>) -> Result<(), CommandError> {
-    let path = node_path(state.inner(), idx)?;
+fn open_in_terminal(tab: u32, idx: u32, state: State<'_, AppState>) -> Result<(), CommandError> {
+    let path = node_path(state.inner(), tab, idx)?;
     fileops::open_in_terminal(&path).map_err(|e| CommandError {
         message: format!("{e}"),
     })?;
@@ -365,15 +405,15 @@ fn open_in_terminal(idx: u32, state: State<'_, AppState>) -> Result<(), CommandE
 }
 
 #[tauri::command]
-fn copy_path(idx: u32, state: State<'_, AppState>) -> Result<String, CommandError> {
-    let path = node_path(state.inner(), idx)?;
+fn copy_path(tab: u32, idx: u32, state: State<'_, AppState>) -> Result<String, CommandError> {
+    let path = node_path(state.inner(), tab, idx)?;
     Ok(path.to_string_lossy().to_string())
 }
 
 /// Open a file in its default application (the "edit" action).
 #[tauri::command]
-fn open_file(idx: u32, state: State<'_, AppState>) -> Result<(), CommandError> {
-    let path = node_path(state.inner(), idx)?;
+fn open_file(tab: u32, idx: u32, state: State<'_, AppState>) -> Result<(), CommandError> {
+    let path = node_path(state.inner(), tab, idx)?;
     fileops::open_file(&path).map_err(|e| CommandError {
         message: format!("{e}"),
     })?;
@@ -389,73 +429,190 @@ struct MutationResult {
     rescan_path: String,
 }
 
-fn rescan_path_of(state: &AppStateInner) -> Result<String, CommandError> {
-    state
-        .scan_path
-        .lock()
-        .clone()
-        .map(|p| p.to_string_lossy().to_string())
-        .ok_or_else(|| CommandError {
-            message: "no active scan".into(),
-        })
-}
-
 /// Create a new folder inside the directory identified by `idx`.
 #[tauri::command]
 fn create_folder(
+    tab: u32,
     idx: u32,
     name: String,
     state: State<'_, AppState>,
 ) -> Result<MutationResult, CommandError> {
-    let dir = node_path(state.inner(), idx)?;
+    let dir = node_path(state.inner(), tab, idx)?;
     let created = fileops::create_folder(&dir, &name).map_err(|e| CommandError {
         message: format!("{e}"),
     })?;
     Ok(MutationResult {
         ok: true,
         path: created.to_string_lossy().to_string(),
-        rescan_path: rescan_path_of(state.inner())?,
+        rescan_path: rescan_path_of(state.inner(), tab)?,
     })
 }
 
 /// Create a new empty file inside the directory identified by `idx`.
 #[tauri::command]
 fn create_file(
+    tab: u32,
     idx: u32,
     name: String,
     state: State<'_, AppState>,
 ) -> Result<MutationResult, CommandError> {
-    let dir = node_path(state.inner(), idx)?;
+    let dir = node_path(state.inner(), tab, idx)?;
     let created = fileops::create_file(&dir, &name).map_err(|e| CommandError {
         message: format!("{e}"),
     })?;
     Ok(MutationResult {
         ok: true,
         path: created.to_string_lossy().to_string(),
-        rescan_path: rescan_path_of(state.inner())?,
+        rescan_path: rescan_path_of(state.inner(), tab)?,
     })
 }
 
 /// Rename the file or folder identified by `idx` to `new_name` (bare segment).
 #[tauri::command]
 fn rename_node(
+    tab: u32,
     idx: u32,
     new_name: String,
     state: State<'_, AppState>,
 ) -> Result<MutationResult, CommandError> {
-    let path = node_path(state.inner(), idx)?;
+    let path = node_path(state.inner(), tab, idx)?;
     let renamed = fileops::rename_path(&path, &new_name).map_err(|e| CommandError {
         message: format!("{e}"),
     })?;
     Ok(MutationResult {
         ok: true,
         path: renamed.to_string_lossy().to_string(),
-        rescan_path: rescan_path_of(state.inner())?,
+        rescan_path: rescan_path_of(state.inner(), tab)?,
+    })
+}
+
+// ---------- Analysis: checksums, compare, steganography ----------
+
+/// Compute CRC32 / MD5 / SHA-1 / SHA-256 of a file.
+#[tauri::command]
+fn checksum_node(
+    tab: u32,
+    idx: u32,
+    state: State<'_, AppState>,
+) -> Result<analysis::ChecksumSet, CommandError> {
+    let path = node_path(state.inner(), tab, idx)?;
+    analysis::checksum_file(&path).map_err(|e| CommandError {
+        message: format!("{e}"),
+    })
+}
+
+/// Byte-compare two nodes (by idx).
+#[tauri::command]
+fn compare_nodes(
+    tab: u32,
+    idx_a: u32,
+    idx_b: u32,
+    state: State<'_, AppState>,
+) -> Result<analysis::CompareResult, CommandError> {
+    let a = node_path(state.inner(), tab, idx_a)?;
+    let b = node_path(state.inner(), tab, idx_b)?;
+    analysis::compare_files(&a, &b).map_err(|e| CommandError {
+        message: format!("{e}"),
+    })
+}
+
+/// Run all steganography detectors on a file.
+#[tauri::command]
+fn stego_scan(
+    tab: u32,
+    idx: u32,
+    state: State<'_, AppState>,
+) -> Result<analysis::stego::ScanReport, CommandError> {
+    let path = node_path(state.inner(), tab, idx)?;
+    Ok(analysis::stego::scan(&path))
+}
+
+fn parse_method(s: &str) -> std::result::Result<analysis::stego::Method, CommandError> {
+    use analysis::stego::Method;
+    match s {
+        "lsb" => Ok(Method::Lsb),
+        "whitespace" => Ok(Method::Whitespace),
+        "format_append" => Ok(Method::FormatAppend),
+        other => Err(CommandError {
+            message: format!("unknown stego method: {other}"),
+        }),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ExtractResult {
+    /// The recovered payload as UTF-8 if it's valid text, else null.
+    text: Option<String>,
+    /// Recovered payload as raw bytes (always present on success).
+    bytes: Vec<u8>,
+    len: usize,
+}
+
+/// Extract a hidden payload from a file using the given method.
+#[tauri::command]
+fn stego_extract(
+    tab: u32,
+    idx: u32,
+    method: String,
+    state: State<'_, AppState>,
+) -> Result<ExtractResult, CommandError> {
+    let path = node_path(state.inner(), tab, idx)?;
+    let m = parse_method(&method)?;
+    let bytes = analysis::stego::extract(m, &path).map_err(|e| CommandError {
+        message: format!("{e}"),
+    })?;
+    let text = String::from_utf8(bytes.clone()).ok();
+    Ok(ExtractResult {
+        len: bytes.len(),
+        text,
+        bytes,
+    })
+}
+
+/// Embed a UTF-8 payload into `idx` using `method`, writing a new file beside
+/// the source (so the original is never modified). Returns the output path and
+/// triggers a re-scan.
+#[tauri::command]
+fn stego_embed(
+    tab: u32,
+    idx: u32,
+    method: String,
+    payload: String,
+    state: State<'_, AppState>,
+) -> Result<MutationResult, CommandError> {
+    let src = node_path(state.inner(), tab, idx)?;
+    let m = parse_method(&method)?;
+    // Output: <stem>.stego.<ext> next to the source — never overwrite the input.
+    let stem = src
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "out".into());
+    let ext = src
+        .extension()
+        .map(|s| format!(".{}", s.to_string_lossy()))
+        .unwrap_or_default();
+    let out = src.with_file_name(format!("{stem}.stego{ext}"));
+    analysis::stego::embed(m, &src, &out, payload.as_bytes()).map_err(|e| CommandError {
+        message: format!("{e}"),
+    })?;
+    Ok(MutationResult {
+        ok: true,
+        path: out.to_string_lossy().to_string(),
+        rescan_path: rescan_path_of(state.inner(), tab)?,
+    })
+}
+
+/// Save an extracted payload to a chosen path.
+#[tauri::command]
+fn save_bytes(path: String, bytes: Vec<u8>) -> Result<(), CommandError> {
+    std::fs::write(&path, &bytes).map_err(|e| CommandError {
+        message: format!("{e}"),
     })
 }
 
 #[derive(Debug, Deserialize)]
 struct RecyclePayload {
+    tab: u32,
     idx: u32,
 }
 
@@ -471,7 +628,7 @@ fn recycle_node(
     payload: RecyclePayload,
     state: State<'_, AppState>,
 ) -> Result<RecycleResult, CommandError> {
-    let path = node_path(state.inner(), payload.idx)?;
+    let path = node_path(state.inner(), payload.tab, payload.idx)?;
     fileops::recycle(&path).map_err(|e| CommandError {
         message: format!("{e}"),
     })?;
@@ -613,13 +770,14 @@ fn relaunch_as_admin(app: AppHandle) -> Result<(), CommandError> {
 
 #[tauri::command]
 fn find_old_files(
+    tab: u32,
     idx: u32,
     cutoff_unix_secs: i64,
     min_size: u64,
     limit: usize,
     state: State<'_, AppState>,
 ) -> Result<Vec<fileops::OldFile>, CommandError> {
-    let path = node_path(state.inner(), idx)?;
+    let path = node_path(state.inner(), tab, idx)?;
     fileops::find_old_files(&path, cutoff_unix_secs, min_size, limit).map_err(|e| CommandError {
         message: format!("{e}"),
     })
@@ -627,11 +785,12 @@ fn find_old_files(
 
 #[tauri::command]
 fn find_empty_dirs(
+    tab: u32,
     idx: u32,
     limit: usize,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, CommandError> {
-    let path = node_path(state.inner(), idx)?;
+    let path = node_path(state.inner(), tab, idx)?;
     let dirs = fileops::find_empty_dirs(&path, limit).map_err(|e| CommandError {
         message: format!("{e}"),
     })?;
@@ -686,16 +845,19 @@ fn parse_sort(s: &str) -> SortKey {
 
 // ---------- App state ----------
 
+/// One scanned tree plus the path it was scanned from. One per UI tab.
+pub struct TabData {
+    pub tree: Tree,
+    pub scan_path: PathBuf,
+}
+
 pub struct AppStateInner {
     pub scan: Mutex<Option<ScanState>>,
-    pub scan_path: Mutex<Option<PathBuf>>,
-    /// The arena tree is mostly READ — every IPC query is a read. A single
-    /// `Mutex` makes the 4 parallel queries on every drill (treemap_layout +
-    /// list_dir + top_n + breadcrumb) serialize behind each other; an
-    /// `RwLock` lets them genuinely run in parallel. The only writer is the
-    /// scan collector thread, which replaces the tree atomically at end of
-    /// scan and otherwise doesn't touch it.
-    pub tree: RwLock<Option<Tree>>,
+    /// Per-tab scanned trees, keyed by the frontend's tab id. Each tab holds an
+    /// independent scan. Reads dominate (every query is a read), and an
+    /// `RwLock` lets the 4 parallel queries on a drill run concurrently; the
+    /// only writer is the scan collector replacing one tab's tree at scan end.
+    pub tabs: RwLock<std::collections::HashMap<u32, TabData>>,
     pub last_progress: Mutex<Option<scanner::Progress>>,
 }
 
@@ -703,8 +865,7 @@ impl AppStateInner {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             scan: Mutex::new(None),
-            scan_path: Mutex::new(None),
-            tree: RwLock::new(None),
+            tabs: RwLock::new(std::collections::HashMap::new()),
             last_progress: Mutex::new(None),
         })
     }
@@ -822,6 +983,10 @@ pub fn selftest() -> i32 {
             ok = false;
         }
 
+        // --- Analysis: checksums, compare, and stego round-trips ---
+        // (scratch dir still exists from the file-op phase; reuse it.)
+        ok &= selftest_analysis(&scratch);
+
         let _ = std::fs::remove_dir_all(&scratch);
         eprintln!("selftest: {}", if ok { "ALL PASS" } else { "FAILURES" });
         return if ok { 0 } else { 1 };
@@ -831,6 +996,102 @@ pub fn selftest() -> i32 {
         eprintln!("selftest only runs on Windows");
         1
     }
+}
+
+/// Analysis-engine self-test: checksum vector, byte compare, and an
+/// embed→detect→extract→verify round-trip for each stego method.
+#[cfg(windows)]
+fn selftest_analysis(scratch: &std::path::Path) -> bool {
+    use analysis::stego::{self, Method};
+    let mut ok = true;
+
+    // Checksum known vector ("abc").
+    let abc = scratch.join("abc.txt");
+    let _ = std::fs::write(&abc, b"abc");
+    match analysis::checksum_file(&abc) {
+        Ok(c) if c.sha256 == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" => {
+            eprintln!("PASS checksum sha256(abc)")
+        }
+        Ok(c) => {
+            eprintln!("FAIL checksum: {}", c.sha256);
+            ok = false;
+        }
+        Err(e) => {
+            eprintln!("FAIL checksum: {e}");
+            ok = false;
+        }
+    }
+
+    // Compare: identical vs different.
+    let f1 = scratch.join("c1.bin");
+    let f2 = scratch.join("c2.bin");
+    let _ = std::fs::write(&f1, b"hello world");
+    let _ = std::fs::write(&f2, b"hello WORLD");
+    match analysis::compare_files(&f1, &f2) {
+        Ok(r) if !r.identical && r.first_diff_offset == Some(6) => {
+            eprintln!("PASS compare first-diff@6")
+        }
+        Ok(r) => {
+            eprintln!(
+                "FAIL compare: identical={} off={:?}",
+                r.identical, r.first_diff_offset
+            );
+            ok = false;
+        }
+        Err(e) => {
+            eprintln!("FAIL compare: {e}");
+            ok = false;
+        }
+    }
+
+    // Build a small PNG cover for image-based methods.
+    let cover = scratch.join("cover.png");
+    {
+        let mut img = analysis::image::RgbImage::new(48, 48);
+        let mut s: u32 = 0xABCD_1234;
+        for px in img.pixels_mut() {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *px = analysis::image::Rgb([(s >> 24) as u8, (s >> 16) as u8, (s >> 8) as u8]);
+        }
+        let _ = img.save(&cover);
+    }
+    let txt = scratch.join("doc.txt");
+    let body: String = (0..400).map(|i| format!("line {i}\n")).collect();
+    let _ = std::fs::write(&txt, body);
+
+    let cases: &[(Method, &std::path::Path, &str, &str)] = &[
+        (Method::Lsb, &cover, "lsb", "png"),
+        (Method::Whitespace, &txt, "whitespace", "txt"),
+        (Method::FormatAppend, &cover, "format_append", "png"),
+    ];
+    let secret = b"treelens stego self-test payload";
+    for (method, src, name, ext) in cases {
+        let out = scratch.join(format!("{name}.stego.{ext}"));
+        match stego::embed(*method, src, &out, secret).and_then(|_| stego::extract(*method, &out)) {
+            Ok(got) if got == secret => {
+                let report = stego::scan(&out);
+                let flagged = report
+                    .findings
+                    .iter()
+                    .any(|f| f.method == *method && f.suspicious);
+                if flagged {
+                    eprintln!("PASS stego {name}: embed → detect → extract round-trip");
+                } else {
+                    eprintln!("FAIL stego {name}: extracted ok but detector didn't flag");
+                    ok = false;
+                }
+            }
+            Ok(_) => {
+                eprintln!("FAIL stego {name}: payload mismatch after round-trip");
+                ok = false;
+            }
+            Err(e) => {
+                eprintln!("FAIL stego {name}: {e}");
+                ok = false;
+            }
+        }
+    }
+    ok
 }
 
 // ---------- Entry ----------
@@ -844,6 +1105,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan_start,
             scan_cancel,
+            close_tab,
             list_dir,
             child_count,
             treemap_layout,
@@ -857,6 +1119,12 @@ pub fn run() {
             create_folder,
             create_file,
             rename_node,
+            checksum_node,
+            compare_nodes,
+            stego_scan,
+            stego_extract,
+            stego_embed,
+            save_bytes,
             recycle_node,
             list_drives,
             is_elevated,

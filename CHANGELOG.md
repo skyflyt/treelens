@@ -4,6 +4,59 @@ All notable changes to Treelens are documented here.
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning is [SemVer](https://semver.org/) (0.x while pre-1.0).
 
+## [0.3.0] — 2026-06-13
+
+Treelens grows a forensics/analysis layer, multi-tab scanning, and world-class
+keyboard navigation.
+
+### Added — analysis
+- **Checksums.** CRC32 / MD5 / SHA-1 / SHA-256 of any file, computed in one
+  streaming pass (Inspect panel). Known-vector tested.
+- **File comparison.** Mark a file, then "Compare with…" another: identical?
+  first-differing byte offset? size delta? side-by-side SHA-256.
+- **Steganography toolkit** (`crates/analysis`) — detect, **reverse/extract**,
+  and (for round-trip testing / watermarking your own files) embed hidden data
+  by three classic techniques, each with a framed `TLNS`-magic payload so
+  recovery is unambiguous:
+  - **LSB** (PNG/BMP) — least-significant-bit embedding in pixel data, plus a
+    chi-square "pairs of values" detector that flags other tools' heavy LSB
+    embedding as a statistical advisory.
+  - **Whitespace / SNOW** — trailing space/tab per line (space=0, tab=1), with
+    a trailing-whitespace-fraction advisory.
+  - **Format-based** — payload appended after a file's logical EOF
+    (PNG `IEND` / JPEG `EOI` / GIF trailer); always recoverable as raw bytes.
+  - Detection separates a **definitive "found & extractable"** verdict from a
+    weaker **statistical advisory**, so there are no cry-wolf false positives.
+  - Extracted payloads can be saved to a file.
+
+### Added — UI
+- **Tabs.** Multiple independent scans, each with its own tree (kept in the
+  Rust backend, keyed by tab id) and view state. New-tab button, click to
+  switch, close button; tabs are named after the scanned folder.
+- **Inspect panel** (4th side-panel view): per-file checksums, a one-click
+  steganography scan with per-method verdicts (found / advisory / clean),
+  extract buttons for recoverable payloads, an embed action (writes a new
+  `.stego` copy, never touches the original), and the compare flow.
+- **World-class keyboard tree navigation:** ↑/↓ move selection (auto-scroll
+  into view), → expand or step in, ← collapse or jump to parent, Enter
+  drill/open, PageUp/PageDown, Home/End, and type-ahead to jump to a name by
+  typing. Selection survives virtual-scroll re-renders.
+
+### Engineering
+- Backend tree store refactored from a single tree to a per-tab `HashMap`
+  behind an `RwLock`; every query/op command now carries a `tab` id.
+- `--selftest` extended to round-trip checksums, compare, and all three stego
+  methods (embed → detect → extract → verify) — runs ALL PASS in the shipping
+  binary, in both regular and admin contexts.
+
+### Note on the steganography feature
+This is a **local forensic/analysis** capability: it reads and writes only
+files you select on your own machine, and nothing leaves the machine. The
+headline use is *detecting and reversing* hidden data; the embed side exists
+for round-trip testing and watermarking your own files.
+
+[0.3.0]: https://github.com/skyflyt/treelens/releases/tag/v0.3.0
+
 ## [0.2.0] — 2026-06-13
 
 Treelens becomes a real file explorer with size superpowers: create, rename,

@@ -8,10 +8,12 @@ import {
   onScanCancelled,
   onScanComplete,
   onScanProgress,
+  setActiveTab,
   type DirRow,
   type Rect,
   type SizeMode,
   type SortKey,
+  type StegoMethod,
 } from "./ipc";
 import { Treemap, type TreemapTheme } from "./treemap";
 import { fmtBytes, fmtCount, fmtDuration, fmtMtime } from "./format";
@@ -54,6 +56,142 @@ function prefersDark(): boolean {
   return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
 }
 
+// ---------- tabs ----------
+// Each tab owns an independent scan (its tree lives in the Rust backend, keyed
+// by tab id). The per-tab *view* fields are snapshotted out of / into `state`
+// on switch, so all the existing `state.currentRoot` references keep working —
+// they always refer to whichever tab is active.
+interface TabSnapshot {
+  id: number;
+  title: string;
+  scanRoot: number | null;
+  currentRoot: number | null;
+  selectedIdx: number | null;
+  scanRootPath: string;
+  totals: UiState["totals"];
+}
+let tabs: TabSnapshot[] = [];
+let activeTabId = 0;
+let nextTabId = 1;
+
+function snapshotActiveTab() {
+  const t = tabs.find((x) => x.id === activeTabId);
+  if (!t) return;
+  t.scanRoot = state.scanRoot;
+  t.currentRoot = state.currentRoot;
+  t.selectedIdx = state.selectedIdx;
+  t.scanRootPath = state.scanRootPath;
+  t.totals = state.totals;
+}
+
+function loadTabIntoState(t: TabSnapshot) {
+  state.scanRoot = t.scanRoot;
+  state.currentRoot = t.currentRoot;
+  state.selectedIdx = t.selectedIdx;
+  state.scanRootPath = t.scanRootPath;
+  state.totals = t.totals;
+  state.scanning = false;
+  state.rectNames.clear();
+  expandedIdxs.clear();
+}
+
+function renderTabBar() {
+  elScanTabs.innerHTML = "";
+  for (const t of tabs) {
+    const el = document.createElement("div");
+    el.className = "scan-tab" + (t.id === activeTabId ? " active" : "");
+    el.innerHTML = `<span class="tab-title">${escapeHtml(t.title)}</span>`;
+    el.title = t.scanRootPath || t.title;
+    el.addEventListener("click", () => switchToTab(t.id));
+    if (tabs.length > 1) {
+      const close = document.createElement("button");
+      close.className = "tab-close";
+      close.textContent = "✕";
+      close.title = "Close tab";
+      close.addEventListener("click", (e) => {
+        e.stopPropagation();
+        closeTab(t.id);
+      });
+      el.appendChild(close);
+    }
+    elScanTabs.appendChild(el);
+  }
+}
+
+function createTab(title = "New tab"): TabSnapshot {
+  const t: TabSnapshot = {
+    id: nextTabId++,
+    title,
+    scanRoot: null,
+    currentRoot: null,
+    selectedIdx: null,
+    scanRootPath: "",
+    totals: null,
+  };
+  tabs.push(t);
+  return t;
+}
+
+async function switchToTab(id: number) {
+  if (id === activeTabId) return;
+  const target = tabs.find((t) => t.id === id);
+  if (!target) return;
+  snapshotActiveTab();
+  activeTabId = id;
+  setActiveTab(id); // route subsequent IPC at this tab's tree
+  loadTabIntoState(target);
+  renderTabBar();
+  drillSeq++; // invalidate any in-flight renders from the previous tab
+  if (state.currentRoot !== null) {
+    await refreshAll(drillSeq);
+    elStatusSummary.textContent = state.totals
+      ? `${fmtCount(state.totals.files)} files · ${fmtCount(state.totals.dirs)} folders · ${fmtBytes(state.totals.bytes)}`
+      : "Ready.";
+  } else {
+    // Empty tab — show the empty state + clear panels.
+    elDirList.innerHTML = "";
+    elTopFilesList.innerHTML = "";
+    elTopDirsList.innerHTML = "";
+    elBreadcrumb.innerHTML = `<span class="hint">No scan yet. Pick a drive or folder to begin.</span>`;
+    renderEmptyState();
+  }
+  (elRescanBtn as HTMLButtonElement).disabled = state.scanRootPath === "";
+  (elNewFolderBtn as HTMLButtonElement).disabled = state.currentRoot === null;
+  (elNewFileBtn as HTMLButtonElement).disabled = state.currentRoot === null;
+}
+
+async function newTab() {
+  snapshotActiveTab();
+  const t = createTab();
+  activeTabId = t.id;
+  setActiveTab(t.id);
+  loadTabIntoState(t);
+  renderTabBar();
+  renderEmptyState();
+  elDirList.innerHTML = "";
+  elTopFilesList.innerHTML = "";
+  elTopDirsList.innerHTML = "";
+  elBreadcrumb.innerHTML = `<span class="hint">No scan yet. Pick a drive or folder to begin.</span>`;
+  // Immediately prompt for what to scan in the new tab.
+  const root = await pickScanRoot();
+  if (root) startScan(root);
+}
+
+function closeTab(id: number) {
+  if (tabs.length <= 1) return;
+  ipc.closeTab(id).catch(() => {});
+  const idx = tabs.findIndex((t) => t.id === id);
+  if (idx === -1) return;
+  tabs.splice(idx, 1);
+  if (activeTabId === id) {
+    const neighbor = tabs[Math.max(0, idx - 1)];
+    activeTabId = -1; // force switchToTab to run
+    switchToTab(neighbor.id);
+  } else {
+    renderTabBar();
+  }
+}
+
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
 const elTreemap = $("#treemap") as HTMLCanvasElement;
@@ -86,6 +224,9 @@ const elCtxMenu = $("#ctx-menu");
 const elStatusLoading = $("#status-loading");
 const elStatusLoadingText = $("#status-loading-text");
 const elStatusVersion = $("#status-version");
+const elScanTabs = $("#scan-tabs");
+const elNewTabBtn = $("#new-tab-btn");
+const elInspector = $("#inspector");
 
 const treemap = new Treemap(
   elTreemap,
@@ -176,41 +317,90 @@ const treemap = new Treemap(
     sessionStorage.setItem("admin-banner-dismissed", "1");
   });
 
-  // Tab switching for side panel.
-  document.querySelectorAll(".tab").forEach((t) => {
+  // Side-panel view switching (Contents / Top files / Top folders / Inspect).
+  document.querySelectorAll(".side-tabs .tab").forEach((t) => {
     t.addEventListener("click", () => {
       const tab = (t as HTMLElement).dataset.tab!;
-      document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x === t));
+      document.querySelectorAll(".side-tabs .tab").forEach((x) => x.classList.toggle("active", x === t));
       document.querySelectorAll(".tab-pane").forEach((x) => x.classList.toggle("active", x.id === `tab-${tab}`));
+      if (tab === "inspect") refreshInspector();
     });
   });
 
-  // Keyboard shortcuts.
+  // New scan tab.
+  elNewTabBtn.addEventListener("click", () => newTab());
+
+  // Initial tab (id 0, matching the backend's default active tab).
+  tabs = [];
+  nextTabId = 0;
+  const first = createTab("Treelens");
+  activeTabId = first.id;
+  setActiveTab(first.id);
+  renderTabBar();
+
+  // Keyboard shortcuts + world-class tree navigation.
   document.addEventListener("keydown", (e) => {
     if (e.target instanceof HTMLInputElement) return;
-    if (e.key === "Backspace") {
-      e.preventDefault();
-      drillUp();
-    } else if (e.key === "F5") {
-      e.preventDefault();
-      if (state.scanRootPath) startScan(state.scanRootPath);
-    } else if (e.key === "F2") {
-      e.preventDefault();
-      if (state.selectedIdx !== null) promptRename(state.selectedIdx);
-    } else if (e.key === "Delete") {
-      e.preventDefault();
-      if (state.selectedIdx !== null) confirmRecycle(state.selectedIdx);
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      if (state.selectedIdx !== null) {
-        if (nameIsDir(state.selectedIdx) && !reparseIdxs.has(state.selectedIdx)) {
-          drillInto(state.selectedIdx);
-        } else {
-          ipc.openFile(state.selectedIdx).catch(() => {});
-        }
-      }
-    } else if (e.key === "Escape") {
-      closeCtxMenu();
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        moveSelection(1);
+        return;
+      case "ArrowUp":
+        e.preventDefault();
+        moveSelection(-1);
+        return;
+      case "ArrowRight":
+        e.preventDefault();
+        activateSelected(false); // expand, or step into
+        return;
+      case "ArrowLeft":
+        e.preventDefault();
+        collapseOrParent();
+        return;
+      case "PageDown":
+        e.preventDefault();
+        moveSelection(Math.floor(elDirList.clientHeight / ROW_HEIGHT) || 10);
+        return;
+      case "PageUp":
+        e.preventDefault();
+        moveSelection(-(Math.floor(elDirList.clientHeight / ROW_HEIGHT) || 10));
+        return;
+      case "Home":
+        e.preventDefault();
+        selectFlatIndex(0);
+        return;
+      case "End":
+        e.preventDefault();
+        selectFlatIndex(flatRows.length - 1);
+        return;
+      case "Backspace":
+        e.preventDefault();
+        drillUp();
+        return;
+      case "F5":
+        e.preventDefault();
+        if (state.scanRootPath) startScan(state.scanRootPath);
+        return;
+      case "F2":
+        e.preventDefault();
+        if (state.selectedIdx !== null) promptRename(state.selectedIdx);
+        return;
+      case "Delete":
+        e.preventDefault();
+        if (state.selectedIdx !== null) confirmRecycle(state.selectedIdx);
+        return;
+      case "Enter":
+        e.preventDefault();
+        activateSelected(true); // drill into dir / open file
+        return;
+      case "Escape":
+        closeCtxMenu();
+        return;
+    }
+    // Type-ahead: printable single characters jump to a matching row.
+    if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey && /\S/.test(e.key)) {
+      typeAhead(e.key, performance.now());
     }
   });
 
@@ -298,6 +488,13 @@ async function handleScanComplete(p: {
   (elNewFolderBtn as HTMLButtonElement).disabled = false;
   (elNewFileBtn as HTMLButtonElement).disabled = false;
   expandedIdxs.clear();
+  // Name the active tab after the scanned folder's last path segment.
+  const t = tabs.find((x) => x.id === activeTabId);
+  if (t) {
+    const seg = p.root_path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p.root_path;
+    t.title = seg;
+    renderTabBar();
+  }
   const seq = ++drillSeq;
   pushLoading("Rendering…");
   try {
@@ -325,6 +522,122 @@ function selectNode(idx: number) {
   document.querySelectorAll(".list-row").forEach((r) => {
     r.classList.toggle("selected", Number((r as HTMLElement).dataset.idx) === idx);
   });
+  // Keep the inspector in sync if it's the active side view.
+  if (document.querySelector("#tab-inspect.active")) {
+    refreshInspector();
+  }
+}
+
+/** Switch the side panel to the Inspect view and load it for `idx`. */
+function inspectNode(idx: number) {
+  selectNode(idx);
+  document.querySelectorAll(".side-tabs .tab").forEach((x) =>
+    x.classList.toggle("active", (x as HTMLElement).dataset.tab === "inspect"),
+  );
+  document.querySelectorAll(".tab-pane").forEach((x) =>
+    x.classList.toggle("active", x.id === "tab-inspect"),
+  );
+  refreshInspector();
+}
+
+// ---------- keyboard tree navigation ----------
+
+/** Index of the currently-selected row within the flattened list, or -1. */
+function selectedFlatIndex(): number {
+  if (state.selectedIdx === null) return -1;
+  return flatRows.findIndex((f) => f.row.idx === state.selectedIdx);
+}
+
+/** Select the row at flat index `i`, scroll it into view, repaint the window. */
+function selectFlatIndex(i: number) {
+  if (flatRows.length === 0) return;
+  const clamped = Math.max(0, Math.min(flatRows.length - 1, i));
+  const row = flatRows[clamped].row;
+  state.selectedIdx = row.idx;
+  treemap.setSelected(row.idx);
+  scrollFlatIndexIntoView(clamped);
+  renderDirWindow(true); // re-render applies .selected from state
+}
+
+function scrollFlatIndexIntoView(i: number) {
+  const top = i * ROW_HEIGHT;
+  const bottom = top + ROW_HEIGHT;
+  const viewTop = elDirList.scrollTop;
+  const viewBottom = viewTop + elDirList.clientHeight;
+  if (top < viewTop) {
+    elDirList.scrollTop = top;
+  } else if (bottom > viewBottom) {
+    elDirList.scrollTop = bottom - elDirList.clientHeight;
+  }
+}
+
+/** Move the selection by `delta` rows (e.g. ±1 for arrows). */
+function moveSelection(delta: number) {
+  const cur = selectedFlatIndex();
+  if (cur === -1) {
+    selectFlatIndex(delta > 0 ? 0 : flatRows.length - 1);
+  } else {
+    selectFlatIndex(cur + delta);
+  }
+}
+
+/** Expand a collapsed dir, or drill into it / open a file (the → / Enter key). */
+async function activateSelected(drillOnDir: boolean) {
+  const idx = state.selectedIdx;
+  if (idx === null) return;
+  const isDir = nameIsDir(idx) && !reparseIdxs.has(idx);
+  if (isDir) {
+    if (drillOnDir) {
+      await drillInto(idx);
+    } else if (!expandedIdxs.has(idx)) {
+      await toggleExpand(idx);
+    } else {
+      // Already expanded → move into first child.
+      moveSelection(1);
+    }
+  } else {
+    ipc.openFile(idx).catch(() => {});
+  }
+}
+
+/** Collapse an expanded dir, or jump to its parent row (the ← key). */
+function collapseOrParent() {
+  const idx = state.selectedIdx;
+  if (idx === null) return;
+  if (nameIsDir(idx) && expandedIdxs.has(idx)) {
+    toggleExpand(idx);
+    return;
+  }
+  // Jump to the parent row: the nearest preceding row at depth-1.
+  const cur = selectedFlatIndex();
+  if (cur <= 0) return;
+  const myDepth = flatRows[cur].depth;
+  for (let i = cur - 1; i >= 0; i--) {
+    if (flatRows[i].depth < myDepth) {
+      selectFlatIndex(i);
+      return;
+    }
+  }
+}
+
+// Type-ahead: typing letters jumps to the next row whose name starts with the
+// accumulated prefix (resets after a short idle).
+let typeAheadBuffer = "";
+let typeAheadAt = 0;
+function typeAhead(ch: string, nowMs: number) {
+  if (nowMs - typeAheadAt > 800) typeAheadBuffer = "";
+  typeAheadAt = nowMs;
+  typeAheadBuffer += ch.toLowerCase();
+  const start = Math.max(0, selectedFlatIndex());
+  const n = flatRows.length;
+  for (let off = 0; off < n; off++) {
+    const i = (start + off + (typeAheadBuffer.length === 1 ? 1 : 0)) % n;
+    const name = flatRows[i].row.name.toLowerCase();
+    if (name.startsWith(typeAheadBuffer)) {
+      selectFlatIndex(i);
+      return;
+    }
+  }
 }
 
 /** Bumped on every drill/refresh. Promises captured before a drill check the
@@ -719,6 +1032,7 @@ function openCtxMenu(idx: number, x: number, y: number) {
     isDir
       ? { label: "Drill into folder", shortcut: "Enter", action: () => drillInto(idx) }
       : { label: "Open (edit)", shortcut: "Enter", action: () => ipc.openFile(idx).catch((e) => alert(`Open failed: ${(e as Error)?.message ?? e}`)) },
+    ...(!isDir ? [{ label: "Inspect (checksums, hidden data)", action: () => inspectNode(idx) }] : []),
     { label: "Reveal in Explorer", action: () => ipc.openInExplorer(idx).catch(() => {}) },
     ...(isDir && !isReparse ? [{ label: "Open in Terminal", action: () => ipc.openInTerminal(idx).catch(() => {}) }] : []),
     { label: "Copy full path", action: async () => {
@@ -875,6 +1189,199 @@ function showResultsModal(title: string, rows: { label: string; sub: string }[])
   backdrop.querySelector("#close-modal")?.addEventListener("click", close);
   backdrop.querySelector("#close-modal-2")?.addEventListener("click", close);
   backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+}
+
+// ---------- file inspector (checksums + steganography) ----------
+
+let compareMarkIdx: number | null = null;
+let compareMarkName = "";
+
+const STEGO_METHODS: { id: StegoMethod; label: string }[] = [
+  { id: "lsb", label: "LSB (image)" },
+  { id: "whitespace", label: "Whitespace / SNOW (text)" },
+  { id: "format_append", label: "Appended-after-EOF" },
+];
+
+/** Rebuild the Inspect panel for the currently-selected node. */
+async function refreshInspector() {
+  const idx = state.selectedIdx;
+  if (idx === null || (nameIsDir(idx) && !reparseIdxs.has(idx))) {
+    elInspector.innerHTML = `<div class="inspector-empty muted small">Select a file, then open Inspect to compute checksums and scan for hidden data.</div>`;
+    return;
+  }
+  const name = state.rectNames.get(idx) ?? "(file)";
+  let path = "";
+  try {
+    path = await ipc.copyPath(idx);
+  } catch {}
+
+  elInspector.innerHTML = "";
+  const sec = (title: string) => {
+    const s = document.createElement("div");
+    s.className = "insp-section";
+    s.innerHTML = `<h3>${escapeHtml(title)}</h3>`;
+    elInspector.appendChild(s);
+    return s;
+  };
+
+  // Header: name + path.
+  const head = sec("File");
+  const p = document.createElement("div");
+  p.className = "insp-path";
+  p.textContent = path || name;
+  head.appendChild(p);
+
+  // --- Checksums ---
+  const cs = sec("Checksums");
+  const csBtn = btn("Compute CRC32 / MD5 / SHA-1 / SHA-256");
+  cs.appendChild(csBtn);
+  csBtn.addEventListener("click", async () => {
+    csBtn.textContent = "Computing…";
+    (csBtn as HTMLButtonElement).disabled = true;
+    try {
+      const c = await ipc.checksumNode(idx);
+      const kv = document.createElement("div");
+      kv.className = "insp-kv";
+      kv.innerHTML = `
+        <span class="k">Size</span><span class="v">${fmtBytes(c.size)} (${c.size.toLocaleString()} bytes)</span>
+        <span class="k">CRC32</span><span class="v">${c.crc32}</span>
+        <span class="k">MD5</span><span class="v">${c.md5}</span>
+        <span class="k">SHA-1</span><span class="v">${c.sha1}</span>
+        <span class="k">SHA-256</span><span class="v">${c.sha256}</span>`;
+      csBtn.replaceWith(kv);
+    } catch (e) {
+      csBtn.textContent = "Compute checksums";
+      (csBtn as HTMLButtonElement).disabled = false;
+      alert(`Checksum failed: ${(e as Error)?.message ?? e}`);
+    }
+  });
+
+  // --- Compare ---
+  const cmp = sec("Compare");
+  const cmpActions = document.createElement("div");
+  cmpActions.className = "insp-actions";
+  const markBtn = btn(compareMarkIdx === idx ? "✓ Marked" : "Mark for compare");
+  cmpActions.appendChild(markBtn);
+  markBtn.addEventListener("click", () => {
+    compareMarkIdx = idx;
+    compareMarkName = name;
+    refreshInspector();
+  });
+  if (compareMarkIdx !== null && compareMarkIdx !== idx) {
+    const doCmp = btn(`Compare with "${compareMarkName}"`);
+    cmpActions.appendChild(doCmp);
+    doCmp.addEventListener("click", async () => {
+      try {
+        const r = await ipc.compareNodes(compareMarkIdx!, idx);
+        const note = r.identical
+          ? "✓ Identical (same SHA-256)"
+          : r.first_diff_offset !== null
+            ? `✗ Differ — first difference at byte ${r.first_diff_offset.toLocaleString()}`
+            : `✗ Differ — sizes ${fmtBytes(r.size_a)} vs ${fmtBytes(r.size_b)}`;
+        showResultsModal("Compare result", [
+          { label: note, sub: "" },
+          { label: `A: ${compareMarkName}`, sub: `${fmtBytes(r.size_a)} · ${r.sha256_a}` },
+          { label: `B: ${name}`, sub: `${fmtBytes(r.size_b)} · ${r.sha256_b}` },
+        ]);
+      } catch (e) {
+        alert(`Compare failed: ${(e as Error)?.message ?? e}`);
+      }
+    });
+  }
+  cmp.appendChild(cmpActions);
+
+  // --- Steganography scan ---
+  const st = sec("Hidden data (steganography)");
+  const scanBtn = btn("Scan for hidden data");
+  st.appendChild(scanBtn);
+  scanBtn.addEventListener("click", async () => {
+    scanBtn.textContent = "Scanning…";
+    (scanBtn as HTMLButtonElement).disabled = true;
+    try {
+      const report = await ipc.stegoScan(idx);
+      const container = document.createElement("div");
+      for (const f of report.findings) {
+        const card = document.createElement("div");
+        const cls = f.suspicious ? "hit" : f.statistical_anomaly ? "advisory" : "";
+        card.className = "insp-finding" + (cls ? ` ${cls}` : "");
+        const badge = f.suspicious
+          ? `<span class="insp-badge hit">found</span>`
+          : f.statistical_anomaly
+            ? `<span class="insp-badge advisory">advisory</span>`
+            : `<span class="insp-badge clean">clean</span>`;
+        const label = STEGO_METHODS.find((m) => m.id === f.method)?.label ?? f.method;
+        card.innerHTML = `<div class="insp-method">${escapeHtml(label)} ${badge}</div><div class="insp-detail">${escapeHtml(f.detail)}</div>`;
+        if (f.suspicious) {
+          const ex = btn("Extract hidden data");
+          ex.style.marginTop = "6px";
+          ex.addEventListener("click", () => extractAndShow(idx, f.method));
+          card.appendChild(ex);
+        }
+        container.appendChild(card);
+      }
+      scanBtn.replaceWith(container);
+    } catch (e) {
+      scanBtn.textContent = "Scan for hidden data";
+      (scanBtn as HTMLButtonElement).disabled = false;
+      alert(`Scan failed: ${(e as Error)?.message ?? e}`);
+    }
+  });
+
+  // --- Embed (round-trip / watermark your own file) ---
+  const em = sec("Embed (watermark / test — writes a new .stego copy)");
+  const emActions = document.createElement("div");
+  emActions.className = "insp-actions";
+  for (const m of STEGO_METHODS) {
+    const b = btn(m.label);
+    b.addEventListener("click", () => embedFlow(idx, m.id));
+    emActions.appendChild(b);
+  }
+  em.appendChild(emActions);
+}
+
+function btn(label: string): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.className = "btn small";
+  b.textContent = label;
+  return b;
+}
+
+async function extractAndShow(idx: number, method: StegoMethod) {
+  try {
+    const res = await ipc.stegoExtract(idx, method);
+    const preview =
+      res.text !== null
+        ? res.text
+        : `(${res.len} binary bytes — not valid UTF-8)`;
+    const save = confirm(
+      `Recovered ${res.len} bytes:\n\n${preview.slice(0, 500)}\n\nClick OK to save the recovered payload to a file.`,
+    );
+    if (save) {
+      const { save: saveDialog } = await import("@tauri-apps/plugin-dialog");
+      const out = await saveDialog({ defaultPath: "recovered.bin" });
+      if (out && typeof out === "string") {
+        await ipc.saveBytes(out, res.bytes);
+        elStatusSummary.textContent = `Saved recovered payload → ${out}`;
+      }
+    }
+  } catch (e) {
+    alert(`Extract failed: ${(e as Error)?.message ?? e}`);
+  }
+}
+
+async function embedFlow(idx: number, method: StegoMethod) {
+  const payload = prompt(
+    "Text to hide in this file (a new .stego copy is written; the original is untouched):",
+    "",
+  );
+  if (payload === null || payload === "") return;
+  try {
+    const res = await ipc.stegoEmbed(idx, method, payload);
+    elStatusSummary.textContent = `Embedded → ${res.path}`;
+    if (res.rescan_path) startScan(res.rescan_path);
+  } catch (e) {
+    alert(`Embed failed: ${(e as Error)?.message ?? e}`);
+  }
 }
 
 // ---------- config ----------

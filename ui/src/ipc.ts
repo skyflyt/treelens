@@ -112,22 +112,65 @@ export interface MutationResult {
   rescan_path: string;
 }
 
+export interface ChecksumSet {
+  size: number;
+  crc32: string;
+  md5: string;
+  sha1: string;
+  sha256: string;
+}
+
+export interface CompareResult {
+  identical: boolean;
+  size_a: number;
+  size_b: number;
+  first_diff_offset: number | null;
+  sha256_a: string;
+  sha256_b: string;
+}
+
+export type StegoMethod = "lsb" | "whitespace" | "format_append";
+
+export interface StegoFinding {
+  method: StegoMethod;
+  suspicious: boolean;
+  confidence: number;
+  statistical_anomaly: boolean;
+  detail: string;
+  recoverable_bytes: number | null;
+}
+
+export interface StegoReport {
+  path: string;
+  findings: StegoFinding[];
+}
+
+export interface StegoExtract {
+  text: string | null;
+  bytes: number[];
+  len: number;
+}
+
 // We use a `bigint`-tolerant number coercion since Tauri serializes u64 as number
 // in JSON and may overflow at >2^53. v0.1 accepts the JS-number cap because no
 // individual file or directory should be >9 PB.
 
 export const ipc = {
-  scanStart(path: string) {
-    return invoke<void>("scan_start", { path });
+  /** Scan into a specific tab id (defaults to the active tab). */
+  scanStart(path: string, tab: number = activeTab) {
+    return invoke<void>("scan_start", { path, tab });
   },
   scanCancel() {
     return invoke<void>("scan_cancel");
   },
+  closeTab(tab: number) {
+    return invoke<void>("close_tab", { tab });
+  },
   listDir(parent: number, sort: SortKey, offset: number, limit: number, sizeMode: SizeMode) {
-    return invoke<DirRow[]>("list_dir", { parent, sort, offset, limit, sizeMode });
+    return invoke<DirRow[]>("list_dir", { tab: activeTab, parent, sort, offset, limit, sizeMode });
   },
   childCount(parent: number) {
-    return invoke<number>("child_count", { parent });
+    return invoke<number>("child_count", { tab: activeTab, parent });
   },
   treemapLayout(
     root: number,
@@ -138,6 +181,7 @@ export const ipc = {
     sizeMode: SizeMode,
   ) {
     return invoke<Rect[]>("treemap_layout", {
+      tab: activeTab,
       root,
       width,
       height,
@@ -147,39 +191,57 @@ export const ipc = {
     });
   },
   topN(root: number, n: number, sizeMode: SizeMode) {
-    return invoke<TopN>("top_n", { root, n, sizeMode });
+    return invoke<TopN>("top_n", { tab: activeTab, root, n, sizeMode });
   },
   breadcrumb(idx: number) {
-    return invoke<BreadcrumbEntry[]>("breadcrumb", { idx });
+    return invoke<BreadcrumbEntry[]>("breadcrumb", { tab: activeTab, idx });
   },
   nodeSummary(idx: number) {
-    return invoke<NodeSummary>("node_summary", { idx });
+    return invoke<NodeSummary>("node_summary", { tab: activeTab, idx });
   },
   openInExplorer(idx: number) {
-    return invoke<void>("open_in_explorer", { idx });
+    return invoke<void>("open_in_explorer", { tab: activeTab, idx });
   },
   openInTerminal(idx: number) {
-    return invoke<void>("open_in_terminal", { idx });
+    return invoke<void>("open_in_terminal", { tab: activeTab, idx });
   },
   copyPath(idx: number) {
-    return invoke<string>("copy_path", { idx });
+    return invoke<string>("copy_path", { tab: activeTab, idx });
   },
   recycleNode(idx: number) {
     return invoke<{ ok: boolean; affected_idx: number; path: string }>("recycle_node", {
-      payload: { idx },
+      payload: { tab: activeTab, idx },
     });
   },
   openFile(idx: number) {
-    return invoke<void>("open_file", { idx });
+    return invoke<void>("open_file", { tab: activeTab, idx });
   },
   createFolder(idx: number, name: string) {
-    return invoke<MutationResult>("create_folder", { idx, name });
+    return invoke<MutationResult>("create_folder", { tab: activeTab, idx, name });
   },
   createFile(idx: number, name: string) {
-    return invoke<MutationResult>("create_file", { idx, name });
+    return invoke<MutationResult>("create_file", { tab: activeTab, idx, name });
   },
   renameNode(idx: number, newName: string) {
-    return invoke<MutationResult>("rename_node", { idx, newName });
+    return invoke<MutationResult>("rename_node", { tab: activeTab, idx, newName });
+  },
+  checksumNode(idx: number) {
+    return invoke<ChecksumSet>("checksum_node", { tab: activeTab, idx });
+  },
+  compareNodes(idxA: number, idxB: number) {
+    return invoke<CompareResult>("compare_nodes", { tab: activeTab, idxA, idxB });
+  },
+  stegoScan(idx: number) {
+    return invoke<StegoReport>("stego_scan", { tab: activeTab, idx });
+  },
+  stegoExtract(idx: number, method: StegoMethod) {
+    return invoke<StegoExtract>("stego_extract", { tab: activeTab, idx, method });
+  },
+  stegoEmbed(idx: number, method: StegoMethod, payload: string) {
+    return invoke<MutationResult>("stego_embed", { tab: activeTab, idx, method, payload });
+  },
+  saveBytes(path: string, bytes: number[]) {
+    return invoke<void>("save_bytes", { path, bytes });
   },
   listDrives() {
     return invoke<DriveEntry[]>("list_drives");
@@ -192,6 +254,7 @@ export const ipc = {
   },
   findOldFiles(idx: number, cutoffUnixSecs: number, minSize: number, limit: number) {
     return invoke<OldFile[]>("find_old_files", {
+      tab: activeTab,
       idx,
       cutoffUnixSecs,
       minSize,
@@ -199,9 +262,16 @@ export const ipc = {
     });
   },
   findEmptyDirs(idx: number, limit: number) {
-    return invoke<string[]>("find_empty_dirs", { idx, limit });
+    return invoke<string[]>("find_empty_dirs", { tab: activeTab, idx, limit });
   },
 };
+
+/** Active tab id, injected into every per-tab command. main.ts updates this
+ *  when the user switches tabs. */
+let activeTab = 0;
+export function setActiveTab(id: number) {
+  activeTab = id;
+}
 
 export function onScanProgress(cb: (p: ScanProgress) => void): Promise<UnlistenFn> {
   return listen<ScanProgress>("scan:progress", (e) => cb(e.payload));

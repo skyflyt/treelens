@@ -54,6 +54,11 @@
         </span>
       </div>
 
+      <div class="tabbar" id="tabbar">
+        <div class="tabs" id="scan-tabs"></div>
+        <button class="tab-new" id="new-tab-btn" title="New scan tab">＋</button>
+      </div>
+
       <main class="main">
         <section class="treemap-pane" id="treemap-pane">
           <canvas id="treemap" tabindex="0"></canvas>
@@ -84,6 +89,7 @@
             <button class="tab active" data-tab="contents" role="tab">Contents</button>
             <button class="tab" data-tab="topfiles" role="tab">Top files</button>
             <button class="tab" data-tab="topdirs" role="tab">Top folders</button>
+            <button class="tab" data-tab="inspect" role="tab">Inspect</button>
           </nav>
           <div class="side-body">
             <div class="tab-pane active" id="tab-contents">
@@ -100,6 +106,11 @@
             </div>
             <div class="tab-pane" id="tab-topdirs">
               <div class="list-viewport" id="topdirs-list"></div>
+            </div>
+            <div class="tab-pane" id="tab-inspect">
+              <div class="inspector" id="inspector">
+                <div class="inspector-empty muted small">Select a file, then open Inspect to compute checksums and scan for hidden data.</div>
+              </div>
             </div>
           </div>
         </aside>
