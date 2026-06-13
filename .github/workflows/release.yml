@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build + draft release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Sync tag → version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart("v")
+          Write-Host "Releasing $version"
+          # Patch tauri.conf.json + Cargo.toml [workspace.package].version
+          $confPath = "src-tauri/tauri.conf.json"
+          $conf = Get-Content $confPath -Raw
+          $conf = $conf -replace '"version":\s*"[^"]+"', "`"version`": `"$version`""
+          Set-Content $confPath $conf -NoNewline
+          $cargoPath = "Cargo.toml"
+          $cargo = Get-Content $cargoPath -Raw
+          $cargo = $cargo -replace '(?ms)(^\[workspace\.package\][\s\S]*?\nversion\s*=\s*")[^"]+("\s*$)', "`${1}$version`${2}"
+          Set-Content $cargoPath $cargo -NoNewline
+
+      - name: Tauri build (release)
+        run: npx tauri build
+
+      - name: Stage artifacts
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          $stage = "release-stage"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          # Portable EXE (the raw built binary, before NSIS wrapping).
+          $portableSrc = "src-tauri\target\release\treelens.exe"
+          $portableDst = "$stage\Treelens-$version-portable.exe"
+          Copy-Item $portableSrc $portableDst
+          # NSIS installer.
+          $nsisDir = "src-tauri\target\release\bundle\nsis"
+          if (Test-Path $nsisDir) {
+            Get-ChildItem $nsisDir -Filter "*.exe" | ForEach-Object {
+              Copy-Item $_.FullName "$stage\Treelens-$version-setup.exe"
+            }
+          }
+          # Checksums
+          Get-ChildItem $stage -File | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)"
+          } | Set-Content "$stage\SHA256SUMS.txt"
+          Get-ChildItem $stage | Format-Table Name, Length
+
+      - name: Draft GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Treelens ${{ github.ref_name }}
+          draft: true
+          generate_release_notes: true
+          files: |
+            release-stage/Treelens-*-portable.exe
+            release-stage/Treelens-*-setup.exe
+            release-stage/SHA256SUMS.txt
+          body: |
+            ## Treelens ${{ github.ref_name }}
+
+            A free, open-source disk-space visualizer for Windows.
+
+            ### Downloads
+            - **`Treelens-${{ github.ref_name }}-portable.exe`** — the single-file portable build. Download, double-click, scan.
+            - **`Treelens-${{ github.ref_name }}-setup.exe`** — NSIS installer (Start menu shortcut, uninstaller).
+            - **`SHA256SUMS.txt`** — verify your download.
+
+            ### Windows warnings — this is normal for unsigned builds
+            Treelens isn't code-signed yet, so SmartScreen will say "Windows protected your PC" and the UAC prompt will show "Publisher: Unknown."
+            Click "More info" → "Run anyway." Source is right here; the SHA-256 file lets you verify the bits.
+
+            ### Notes
+            - No telemetry. No network access. Treelens never writes outside its own folder unless you ask.
+            - Runs without admin (degraded — some files won't be visible). Click "Relaunch as admin" in the banner for full visibility.
+            - The MFT fast path is planned for v0.2; v0.1 uses a parallel-walk scanner that works on any filesystem.
