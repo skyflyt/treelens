@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1d4ed8"/>
+      <stop offset="100%" stop-color="#0b3a86"/>
+    </linearGradient>
+    <linearGradient id="r1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#d97706"/>
+    </linearGradient>
+    <linearGradient id="r2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#5eead4"/>
+      <stop offset="100%" stop-color="#0d9488"/>
+    </linearGradient>
+    <linearGradient id="r3" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f472b6"/>
+      <stop offset="100%" stop-color="#be185d"/>
+    </linearGradient>
+    <linearGradient id="r4" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#6d28d9"/>
+    </linearGradient>
+    <filter id="lensShadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="3" />
+    </filter>
+  </defs>
+
+  <!-- Rounded background -->
+  <rect x="0" y="0" width="256" height="256" rx="48" ry="48" fill="url(#bg)"/>
+
+  <!-- Subtle inner highlight along the top edge -->
+  <rect x="0" y="0" width="256" height="48" rx="48" ry="48" fill="white" opacity="0.06"/>
+
+  <!-- Treemap rectangles, occupying ~64% of the canvas (interior padding 32) -->
+  <g>
+    <!-- Big upper-left rect -->
+    <rect x="32" y="40" width="118" height="118" rx="10" ry="10" fill="url(#r1)"/>
+    <!-- Top-right rect -->
+    <rect x="158" y="40" width="68" height="60" rx="8" ry="8" fill="url(#r2)"/>
+    <!-- Bottom-right rect -->
+    <rect x="158" y="108" width="68" height="100" rx="8" ry="8" fill="url(#r3)"/>
+    <!-- Bottom-left strip -->
+    <rect x="32" y="166" width="118" height="42" rx="8" ry="8" fill="url(#r4)"/>
+  </g>
+
+  <!-- Magnifying lens — positioned over the boundary of the big rect to feel like
+       "looking into the data". Two concentric circles for the lens ring with
+       translucent center, and an angled handle. -->
+  <g transform="translate(154 154)">
+    <!-- Shadow behind lens -->
+    <ellipse cx="0" cy="0" rx="50" ry="50" fill="rgba(0,0,0,0.25)" filter="url(#lensShadow)"/>
+    <!-- Lens glass -->
+    <circle cx="0" cy="0" r="44" fill="rgba(255,255,255,0.18)" stroke="white" stroke-width="8"/>
+    <!-- Lens highlight -->
+    <ellipse cx="-14" cy="-16" rx="14" ry="9" fill="white" opacity="0.40"/>
+    <!-- Handle -->
+    <rect x="30" y="30" width="46" height="14" rx="7" ry="7"
+          fill="white"
+          transform="rotate(45 30 30)"/>
+  </g>
+</svg>
