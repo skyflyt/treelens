@@ -26,14 +26,23 @@ pub const FLAG_UNSCANNABLE: u16 = 1 << 2;
 pub const FLAG_HIDDEN: u16 = 1 << 3;
 pub const FLAG_SYSTEM: u16 = 1 << 4;
 pub const FLAG_READONLY: u16 = 1 << 5;
+/// File is a cloud placeholder (OneDrive Files-On-Demand, etc.) — present in
+/// metadata but the bytes are not on local disk. We report allocated=0 for these
+/// so "size on disk" totals don't double-count the user's cloud storage.
+pub const FLAG_CLOUD_PLACEHOLDER: u16 = 1 << 6;
 
 /// One filesystem entry surfaced by the scanner.
 ///
-/// The scanner emits records as a flat stream; the parent index is the
-/// scanner-local index of the parent directory's record (`u32::MAX` for the
-/// root). The receiver glues them into a tree.
+/// The scanner emits records as a flat stream over a channel; because workers
+/// run concurrently, **the emission order does not match the assigned idx**.
+/// Every record carries its own `idx` (atomically allocated at emit time) and
+/// references its parent by `parent` (also a scanner-local idx, `u32::MAX` for
+/// the root). The receiver MUST sort by `idx` before treating Vec-position as
+/// canonical — otherwise `parent` pointers point to the wrong record and the
+/// tree topology gets scrambled.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
+    pub idx: u32,
     pub name: String,
     pub parent: u32,
     pub logical: u64,
@@ -152,6 +161,7 @@ pub fn scan(
             })
             .unwrap_or(0);
     let _ = record_tx.send(Record {
+        idx: 0,
         name: root_name,
         parent: u32::MAX,
         logical: 0,
@@ -285,9 +295,19 @@ fn worker(
                     {
                         use std::os::windows::fs::MetadataExt;
                         let a = meta.file_attributes();
+                        // FILE_ATTRIBUTE_REPARSE_POINT — junctions, symlinks, app-exec
+                        // aliases. We never traverse these (cycle / double-count safety).
                         if a & 0x0400 != 0 {
                             flags |= FLAG_REPARSE;
-                        } // FILE_ATTRIBUTE_REPARSE_POINT
+                        }
+                        // FILE_ATTRIBUTE_OFFLINE (0x1000) / RECALL_ON_DATA_ACCESS (0x400000) /
+                        // RECALL_ON_OPEN (0x40000) — OneDrive Files-On-Demand & equivalents.
+                        // The file's logical size is real but it occupies ~0 bytes locally
+                        // until the user opens it. We surface "on disk" as 0 for these so
+                        // a OneDrive-heavy machine doesn't report 2× its actual disk use.
+                        if a & 0x001000 != 0 || a & 0x400000 != 0 || a & 0x040000 != 0 {
+                            flags |= FLAG_CLOUD_PLACEHOLDER;
+                        }
                         if a & 0x0002 != 0 {
                             flags |= FLAG_HIDDEN;
                         }
@@ -301,7 +321,11 @@ fn worker(
                     let is_dir = ft.is_dir() && (flags & FLAG_REPARSE == 0);
                     let logical = if ft.is_file() { meta.len() } else { 0 };
                     let allocated = if ft.is_file() {
-                        align_up(logical, opts.cluster_size)
+                        if flags & FLAG_CLOUD_PLACEHOLDER != 0 {
+                            0
+                        } else {
+                            align_up(logical, opts.cluster_size)
+                        }
                     } else {
                         0
                     };
@@ -328,6 +352,7 @@ fn worker(
                     // Symlinks/reparse points: zero-size leaf, badge in UI.
 
                     let _ = record_tx.send(Record {
+                        idx,
                         name,
                         parent: parent_idx,
                         logical,
@@ -439,6 +464,64 @@ mod tests {
         assert_eq!(dirs, 2); // root + sub
         let total_logical: u64 = recs.iter().map(|r| r.logical).sum();
         assert_eq!(total_logical, 300);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junction_is_not_traversed() {
+        // Set up:
+        //   root/
+        //     real/
+        //       a.bin (1024 bytes)
+        //     link  -> junction to real/
+        // Expect: scanner emits one record for `link` (with reparse flag, zero size)
+        //         and does NOT recurse into it. Total a.bin counted ONCE.
+        let dir = tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("a.bin"), vec![0u8; 1024]).unwrap();
+
+        let link = dir.path().join("link");
+        // Use cmd /c mklink /J — works for non-admin (junctions don't require privilege).
+        let status = std::process::Command::new("cmd")
+            .args([
+                "/c",
+                "mklink",
+                "/J",
+                link.to_str().unwrap(),
+                real.to_str().unwrap(),
+            ])
+            .status()
+            .expect("mklink");
+        if !status.success() {
+            eprintln!("mklink failed; skipping test (likely sandbox restriction)");
+            return;
+        }
+
+        let opts = ScanOptions {
+            threads: 2,
+            ..ScanOptions::new(dir.path())
+        };
+        let (rec_rx, _evt_rx, h) = spawn(opts, Cancel::new(), 1024, 16);
+        let recs: Vec<Record> = rec_rx.iter().collect();
+        let _ = h.join();
+
+        // Total logical = 1024 if dedupe works; would be 2048 if junction was traversed.
+        let total_logical: u64 = recs.iter().map(|r| r.logical).sum();
+        let file_count = recs.iter().filter(|r| r.flags & FLAG_DIR == 0).count();
+        let reparse_count = recs.iter().filter(|r| r.flags & FLAG_REPARSE != 0).count();
+        eprintln!(
+            "records={} total_logical={} files={} reparse_marked={}",
+            recs.len(),
+            total_logical,
+            file_count,
+            reparse_count
+        );
+        assert!(reparse_count >= 1, "junction should be marked as reparse");
+        assert_eq!(
+            total_logical, 1024,
+            "junction was traversed; size double-counted"
+        );
     }
 
     #[test]

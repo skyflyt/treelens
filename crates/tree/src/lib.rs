@@ -68,7 +68,7 @@ impl Tree {
     /// children in whatever order the parallel walk produced them. We bucket
     /// children by parent, then write them out contiguously and rewire
     /// `first_child`/`child_count`.
-    pub fn build(records: Vec<scanner::Record>) -> Self {
+    pub fn build(mut records: Vec<scanner::Record>) -> Self {
         let n = records.len();
         if n == 0 {
             return Tree {
@@ -77,9 +77,22 @@ impl Tree {
             };
         }
 
+        // The scanner emits records concurrently from many workers, so emission
+        // order ≠ scanner-idx order. Sort so Vec-position == idx; this restores
+        // the invariant that every record's `parent` field is an index into THIS
+        // Vec. (Without this step, parent pointers cross-attach unrelated
+        // subtrees.) Records were originally allocated dense via fetch_add, so
+        // after the sort idxs are 0..n.
+        records.sort_unstable_by_key(|r| r.idx);
+        // Sanity: detect duplicates / gaps. We don't error here (a hotfix
+        // shouldn't panic the UI), but we'd notice in tests.
+        debug_assert!(
+            records.iter().enumerate().all(|(i, r)| r.idx as usize == i),
+            "scanner record idxs are not dense after sort"
+        );
+
         // First pass: build per-parent child lists, keyed by scanner-local index.
-        // We accept the BTreeMap cost — at v0.1 scales (millions of files) the
-        // per-parent dispatch is dominated by the file IO time.
+        // (Which now coincides with Vec position.)
         let mut children_of: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
         for (i, r) in records.iter().enumerate() {
             if r.parent != u32::MAX {
@@ -87,17 +100,20 @@ impl Tree {
             }
         }
 
-        // We want children stored contiguously after their parent so `first_child +
-        // child_count` slicing works without an index table. Easiest scheme:
-        // depth-first reorder from the root.
+        // We want children stored contiguously per parent so `first_child + child_count`
+        // is a real range. The natural layout for that is BFS (level-order): root, then
+        // all root's children, then all grandchildren ordered by parent, etc. DFS
+        // preorder does NOT have this property — siblings get separated by the prior
+        // sibling's full subtree, so `first_child + child_count` slices across non-
+        // siblings and queries explode into duplicates. BFS is the fix.
         let mut order: Vec<u32> = Vec::with_capacity(n);
-        let mut stack: Vec<u32> = vec![0];
-        while let Some(idx) = stack.pop() {
+        let mut queue: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
+        queue.push_back(0);
+        while let Some(idx) = queue.pop_front() {
             order.push(idx);
             if let Some(children) = children_of.get(&idx) {
-                // Push in reverse so the first child comes off the stack first.
-                for &c in children.iter().rev() {
-                    stack.push(c);
+                for &c in children {
+                    queue.push_back(c);
                 }
             }
         }
@@ -395,19 +411,28 @@ pub fn top_files(tree: &Tree, root_idx: u32, n: usize, mode: SizeMode) -> Vec<Di
 }
 
 /// Top-N directories (excluding the queried root) by size.
+/// Top-N directories (excluding the queried root) by size.
+///
+/// Passthrough ancestors — directories whose size is ≥95% accounted for by a
+/// single child — are suppressed in favor of that child. This stops the panel
+/// from filling with long ancestor chains like
+/// `AppData / Local / Microsoft / OneDrive / logs / ListSync / Local`
+/// where every level reports essentially the same number.
 pub fn top_dirs(tree: &Tree, root_idx: u32, n: usize, mode: SizeMode) -> Vec<DirRow> {
     let root_size = tree.root_size(mode).max(1);
     let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<(u64, u32)>> =
         std::collections::BinaryHeap::with_capacity(n + 1);
     walk_subtree(tree, root_idx, &mut |idx, node| {
-        if node.is_dir() && idx != root_idx {
+        if node.is_dir() && idx != root_idx && !is_passthrough(tree, idx, mode) {
             let size = match mode {
                 SizeMode::Allocated => node.allocated,
                 SizeMode::Logical => node.logical,
             };
-            heap.push(std::cmp::Reverse((size, idx)));
-            if heap.len() > n {
-                heap.pop();
+            if size > 0 {
+                heap.push(std::cmp::Reverse((size, idx)));
+                if heap.len() > n {
+                    heap.pop();
+                }
             }
         }
     });
@@ -423,6 +448,28 @@ pub fn top_dirs(tree: &Tree, root_idx: u32, n: usize, mode: SizeMode) -> Vec<Dir
             row_for(tree, i, parent_size, root_size, mode)
         })
         .collect()
+}
+
+/// A directory is a "passthrough" if a single child accounts for ≥95% of its
+/// size — meaning the directory itself adds essentially nothing over its child.
+/// We hide passthroughs from top_dirs in favor of the child that's doing the
+/// actual work.
+fn is_passthrough(tree: &Tree, idx: u32, mode: SizeMode) -> bool {
+    let my_size = tree.size_of(idx, mode);
+    if my_size == 0 {
+        return true;
+    }
+    let mut max_child = 0u64;
+    for c in tree.child_indexes(idx) {
+        let cs = tree.size_of(c, mode);
+        if cs > max_child {
+            max_child = cs;
+        }
+    }
+    // 95% is deliberately strict: `AppData/Local/Microsoft` (~91% from OneDrive)
+    // STAYS visible because there's real other content alongside; `.silabs/slt/
+    // installs` (≈100% from one child) collapses out.
+    (max_child as f64) >= (my_size as f64) * 0.95
 }
 
 fn walk_subtree<F: FnMut(u32, &Node)>(tree: &Tree, root: u32, f: &mut F) {
@@ -693,8 +740,9 @@ mod tests {
     use super::*;
     use scanner::Record;
 
-    fn rec(name: &str, parent: u32, size: u64, is_dir: bool) -> Record {
+    fn rec(idx: u32, name: &str, parent: u32, size: u64, is_dir: bool) -> Record {
         Record {
+            idx,
             name: name.into(),
             parent,
             logical: if is_dir { 0 } else { size },
@@ -711,11 +759,11 @@ mod tests {
         //   sub/
         //     c.bin (50)
         let records = vec![
-            rec("root", u32::MAX, 0, true),
-            rec("a.bin", 0, 100, false),
-            rec("b.bin", 0, 300, false),
-            rec("sub", 0, 0, true),
-            rec("c.bin", 3, 50, false),
+            rec(0, "root", u32::MAX, 0, true),
+            rec(1, "a.bin", 0, 100, false),
+            rec(2, "b.bin", 0, 300, false),
+            rec(3, "sub", 0, 0, true),
+            rec(4, "c.bin", 3, 50, false),
         ];
         Tree::build(records)
     }
@@ -747,6 +795,116 @@ mod tests {
         assert_eq!(top.len(), 2);
         assert_eq!(top[0].name, "b.bin");
         assert_eq!(top[1].name, "a.bin");
+    }
+
+    #[test]
+    fn build_is_robust_to_emission_order() {
+        // Mimic concurrent workers emitting records out of idx order. Records'
+        // `parent` fields still reference scanner-local idxs; Tree::build must
+        // sort by idx so Vec-position becomes canonical. Without that sort,
+        // child records cross-attach to whichever record happens to occupy the
+        // Vec position they reference, garbling the tree.
+        let mut records = vec![
+            rec(0, "root", u32::MAX, 0, true),
+            rec(1, "A", 0, 0, true),
+            rec(2, "B", 0, 0, true),
+            rec(3, "A1", 1, 100, false),
+            rec(4, "B1", 2, 200, false),
+        ];
+        // Shuffle: simulate worker-B-faster emission.
+        records.swap(2, 3); // B and A1 swap
+        records.swap(1, 4); // A and B1 swap
+
+        let t = Tree::build(records);
+
+        // After sort + build, the tree's structural invariants must hold:
+        // root has exactly two dir children (A, B), each holding one file.
+        let kids = list_dir(&t, 0, SortKey::NameAsc, 0, 100, SizeMode::Logical);
+        let names: Vec<&str> = kids.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, &["A", "B"]);
+        assert_eq!(t.nodes[0].logical, 300, "root rolls up to 100+200");
+        assert_eq!(t.nodes[0].file_count, 2);
+    }
+
+    #[test]
+    fn deeper_tree_no_duplicate_idxs_in_queries() {
+        // Build a 3-level tree that previously triggered the DFS-preorder layout bug:
+        // sibling subtrees of unequal depth made first_child + child_count slice across
+        // non-siblings, so walk_subtree and list_dir visited deeper nodes multiple times.
+        //
+        // root/
+        //   A/ (subtree: A, A1, A2, A1a)
+        //     A1/  (subtree: A1, A1a)
+        //       A1a (file 100)
+        //     A2 (file 200)
+        //   B/ (subtree: B, B1)
+        //     B1 (file 300)
+        //   C/ (subtree: C, C1, C2)
+        //     C1 (file 400)
+        //     C2 (file 500)
+        let mut records = vec![rec(0, "root", u32::MAX, 0, true)];
+        let a = records.len() as u32;
+        records.push(rec(a, "A", 0, 0, true));
+        let a1 = records.len() as u32;
+        records.push(rec(a1, "A1", a, 0, true));
+        let a1a = records.len() as u32;
+        records.push(rec(a1a, "A1a", a1, 100, false));
+        let a2 = records.len() as u32;
+        records.push(rec(a2, "A2", a, 200, false));
+        let b = records.len() as u32;
+        records.push(rec(b, "B", 0, 0, true));
+        let b1 = records.len() as u32;
+        records.push(rec(b1, "B1", b, 300, false));
+        let c = records.len() as u32;
+        records.push(rec(c, "C", 0, 0, true));
+        let c1 = records.len() as u32;
+        records.push(rec(c1, "C1", c, 400, false));
+        let c2 = records.len() as u32;
+        records.push(rec(c2, "C2", c, 500, false));
+
+        let t = Tree::build(records);
+
+        // Children of root should be exactly {A, B, C} — three distinct dirs, in any order.
+        let kids = list_dir(&t, 0, SortKey::NameAsc, 0, 100, SizeMode::Logical);
+        let names: Vec<&str> = kids.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, &["A", "B", "C"], "root must have exactly A, B, C");
+
+        // top_files across the whole tree should return each file exactly once.
+        let top = top_files(&t, 0, 50, SizeMode::Logical);
+        let top_idxs: std::collections::HashSet<u32> = top.iter().map(|r| r.idx).collect();
+        assert_eq!(
+            top_idxs.len(),
+            top.len(),
+            "top_files contained duplicate idxs"
+        );
+        assert_eq!(top.len(), 5, "expected 5 files (A1a, A2, B1, C1, C2)");
+
+        // top_dirs walks every dir in the subtree, but the passthrough filter hides
+        // dirs whose single child holds ≥95% of their size. So A1 (only A1a) and
+        // B (only B1) collapse out; we're left with {A, C} where the dir has a real
+        // mix of children.
+        let dirs = top_dirs(&t, 0, 50, SizeMode::Logical);
+        let dir_idxs: std::collections::HashSet<u32> = dirs.iter().map(|r| r.idx).collect();
+        assert_eq!(
+            dir_idxs.len(),
+            dirs.len(),
+            "top_dirs contained duplicate idxs"
+        );
+        let names: Vec<&str> = dirs.iter().map(|r| r.name.as_str()).collect();
+        assert!(names.contains(&"A"));
+        assert!(names.contains(&"C"));
+        assert!(
+            !names.contains(&"B"),
+            "B has a single child B1 — should be filtered as passthrough"
+        );
+        assert!(
+            !names.contains(&"A1"),
+            "A1 has a single child A1a — should be filtered as passthrough"
+        );
+
+        // Aggregation: root logical = 100 + 200 + 300 + 400 + 500 = 1500.
+        assert_eq!(t.nodes[0].logical, 1500);
+        assert_eq!(t.nodes[0].file_count, 5);
     }
 
     #[test]
