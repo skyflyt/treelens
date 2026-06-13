@@ -192,3 +192,6 @@ export function onScanComplete(cb: (p: ScanComplete) => void): Promise<UnlistenF
 export function onScanCancelled(cb: () => void): Promise<UnlistenFn> {
   return listen<void>("scan:cancelled", () => cb());
 }
+export function onScanAuto(cb: (path: string) => void): Promise<UnlistenFn> {
+  return listen<string>("scan:auto", (e) => cb(e.payload));
+}

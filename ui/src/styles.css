@@ -310,13 +310,18 @@ body {
 }
 .col-size, .col-pct, .col-mtime { text-align: right; }
 
-.list-viewport { overflow-y: auto; flex: 1; }
+.list-viewport {
+  overflow-y: auto;
+  flex: 1;
+}
 .list-row {
   display: grid;
   grid-template-columns: 1fr 78px 100px 78px;
   align-items: center;
   gap: 8px;
-  padding: 5px 10px;
+  padding: 0 10px;
+  height: 26px;          /* must match ROW_HEIGHT in main.ts */
+  box-sizing: border-box;
   border-bottom: 1px solid var(--bg-elev-2);
   cursor: pointer;
   font-variant-numeric: tabular-nums;
@@ -416,6 +421,20 @@ body {
   font-variant-numeric: tabular-nums;
 }
 .status-spacer { flex: 1; }
+.status-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent-text);
+}
+.spinner-sm {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+}
 
 /* context menu */
 .ctx-menu {

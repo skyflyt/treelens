@@ -4,6 +4,50 @@ All notable changes to Treelens are documented here.
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning is [SemVer](https://semver.org/) (0.x while pre-1.0).
 
+## [0.1.3] — 2026-06-13
+
+### Fixed
+- **App froze on second drill.** Every IPC command (`treemap_layout`, `list_dir`,
+  `top_n`, `breadcrumb`) was grabbing a single `Mutex<Tree>`, so the 4
+  "parallel" calls on every drill actually serialized behind each other —
+  back-to-back drills compounded into multi-second hangs that tripped
+  Windows's "Not Responding" treatment. Switched `state.tree` to a
+  `parking_lot::RwLock` so reads run concurrently on the Tauri worker pool.
+- **Treemap layout could return tens of thousands of rects** on a pathological
+  subtree (deep nesting + tiny rects rounding up); the JSON serialization
+  alone could stall the WebView. Added a hard `MAX_RECTS = 8192` defensive
+  cap that bails out of the squarify recursion once hit.
+- **Stale renders from a previous drill could land after a new drill,
+  overwriting the new view with the old data.** Every drill now bumps a
+  `drillSeq` counter; every IPC result checks the captured seq before
+  applying to the DOM and discards if superseded.
+- **Version stamp drifted across releases** because it was hardcoded in
+  `index.html` (v0.1.1 EXE displayed "v0.1.0", v0.1.2 stayed "v0.1.0").
+  Now injected at build time from `package.json` via a Vite `define`, so
+  every build reads one source of truth.
+
+### Added
+- **Loading indicator in the status bar** during drill (spinner +
+  "Loading <folder>…"). Drill errors surface as `"Drill failed: <msg>"`
+  instead of silently freezing.
+- **Per-IPC-command timing logs** (`TimedSpan`) for debug builds and any
+  release-build call that exceeds 200 ms, so the next slow path is
+  observable instead of guessed at.
+- **Cloud-placeholder detection** for OneDrive Files-On-Demand files
+  (`FILE_ATTRIBUTE_OFFLINE` / `RECALL_ON_DATA_ACCESS` / `RECALL_ON_OPEN`) —
+  reports `allocated = 0` for files whose bytes are not on local disk.
+- **Inline-expand depth tracking is preserved.** Drilling now also resets
+  the expanded set so chevron state from a different parent doesn't leak
+  into the new view.
+
+### Known limitations
+- The side panel still renders up to 500 rows at once (capped, with a
+  "… N more rows hidden" note). A genuine windowed virtual scroller is
+  the headline of **v0.1.4** — it kept getting in the way of shipping the
+  freeze fix, so it's split out.
+
+[0.1.3]: https://github.com/skyflyt/treelens/releases/tag/v0.1.3
+
 ## [0.1.2] — 2026-06-13
 
 ### Fixed

@@ -7,7 +7,7 @@
 mod state;
 
 use crossbeam_channel::Receiver;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use scanner::{Cancel, ScanEvent, ScanOptions};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -142,7 +142,7 @@ fn collect_scan(
 
     if cancelled {
         *state.scan_path.lock() = None;
-        *state.tree.lock() = None;
+        *state.tree.write() = None;
         let _ = app.emit("scan:cancelled", ());
         return;
     }
@@ -154,7 +154,7 @@ fn collect_scan(
     let dirs = tree.nodes[root_idx as usize].dir_count;
     let nodes = tree.nodes.len() as u32;
     *state.scan_path.lock() = Some(root.clone());
-    *state.tree.lock() = Some(tree);
+    *state.tree.write() = Some(tree);
     *state.last_progress.lock() = last_progress;
     let payload = ScanCompletePayload {
         root_idx,
@@ -177,7 +177,8 @@ fn list_dir(
     size_mode: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<DirRow>, CommandError> {
-    let tree_guard = state.tree.lock();
+    let _timer = TimedSpan::new("list_dir");
+    let tree_guard = state.tree.read();
     let tree = tree_guard.as_ref().ok_or_else(|| CommandError {
         message: "no scan loaded".into(),
     })?;
@@ -198,7 +199,7 @@ fn list_dir(
 
 #[tauri::command]
 fn child_count(parent: u32, state: State<'_, AppState>) -> Result<usize, CommandError> {
-    let tree_guard = state.tree.lock();
+    let tree_guard = state.tree.read();
     let tree = tree_guard.as_ref().ok_or_else(|| CommandError {
         message: "no scan loaded".into(),
     })?;
@@ -215,7 +216,8 @@ fn treemap_layout(
     size_mode: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<Rect>, CommandError> {
-    let tree_guard = state.tree.lock();
+    let _timer = TimedSpan::new("treemap_layout");
+    let tree_guard = state.tree.read();
     let tree = tree_guard.as_ref().ok_or_else(|| CommandError {
         message: "no scan loaded".into(),
     })?;
@@ -252,7 +254,8 @@ fn top_n(
     size_mode: String,
     state: State<'_, AppState>,
 ) -> Result<TopNResponse, CommandError> {
-    let tree_guard = state.tree.lock();
+    let _timer = TimedSpan::new("top_n");
+    let tree_guard = state.tree.read();
     let tree = tree_guard.as_ref().ok_or_else(|| CommandError {
         message: "no scan loaded".into(),
     })?;
@@ -271,7 +274,7 @@ struct BreadcrumbEntry {
 
 #[tauri::command]
 fn breadcrumb(idx: u32, state: State<'_, AppState>) -> Result<Vec<BreadcrumbEntry>, CommandError> {
-    let tree_guard = state.tree.lock();
+    let tree_guard = state.tree.read();
     let tree = tree_guard.as_ref().ok_or_else(|| CommandError {
         message: "no scan loaded".into(),
     })?;
@@ -300,7 +303,7 @@ struct NodeSummary {
 
 #[tauri::command]
 fn node_summary(idx: u32, state: State<'_, AppState>) -> Result<NodeSummary, CommandError> {
-    let tree_guard = state.tree.lock();
+    let tree_guard = state.tree.read();
     let tree = tree_guard.as_ref().ok_or_else(|| CommandError {
         message: "no scan loaded".into(),
     })?;
@@ -323,7 +326,7 @@ fn node_summary(idx: u32, state: State<'_, AppState>) -> Result<NodeSummary, Com
 }
 
 fn node_path(state: &AppStateInner, idx: u32) -> Result<PathBuf, CommandError> {
-    let tree_guard = state.tree.lock();
+    let tree_guard = state.tree.read();
     let tree = tree_guard.as_ref().ok_or_else(|| CommandError {
         message: "no scan loaded".into(),
     })?;
@@ -554,6 +557,30 @@ fn find_empty_dirs(
         .collect())
 }
 
+/// Drop-on-scope timer that logs the elapsed milliseconds of an IPC command
+/// in debug builds. Release builds elide both the print and the `Instant::now()`.
+struct TimedSpan {
+    label: &'static str,
+    start: std::time::Instant,
+}
+impl TimedSpan {
+    #[inline]
+    fn new(label: &'static str) -> Self {
+        Self {
+            label,
+            start: std::time::Instant::now(),
+        }
+    }
+}
+impl Drop for TimedSpan {
+    fn drop(&mut self) {
+        let ms = self.start.elapsed().as_secs_f64() * 1000.0;
+        if cfg!(debug_assertions) || ms > 200.0 {
+            eprintln!("[ipc] {} {:.1} ms", self.label, ms);
+        }
+    }
+}
+
 fn parse_mode(s: &str) -> SizeMode {
     match s {
         "logical" => SizeMode::Logical,
@@ -578,7 +605,13 @@ fn parse_sort(s: &str) -> SortKey {
 pub struct AppStateInner {
     pub scan: Mutex<Option<ScanState>>,
     pub scan_path: Mutex<Option<PathBuf>>,
-    pub tree: Mutex<Option<Tree>>,
+    /// The arena tree is mostly READ — every IPC query is a read. A single
+    /// `Mutex` makes the 4 parallel queries on every drill (treemap_layout +
+    /// list_dir + top_n + breadcrumb) serialize behind each other; an
+    /// `RwLock` lets them genuinely run in parallel. The only writer is the
+    /// scan collector thread, which replaces the tree atomically at end of
+    /// scan and otherwise doesn't touch it.
+    pub tree: RwLock<Option<Tree>>,
     pub last_progress: Mutex<Option<scanner::Progress>>,
 }
 
@@ -587,7 +620,7 @@ impl AppStateInner {
         Arc::new(Self {
             scan: Mutex::new(None),
             scan_path: Mutex::new(None),
-            tree: Mutex::new(None),
+            tree: RwLock::new(None),
             last_progress: Mutex::new(None),
         })
     }

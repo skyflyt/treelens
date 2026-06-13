@@ -4,6 +4,7 @@
  */
 import {
   ipc,
+  onScanAuto,
   onScanCancelled,
   onScanComplete,
   onScanProgress,
@@ -13,9 +14,11 @@ import {
   type SortKey,
 } from "./ipc";
 import { Treemap, type TreemapTheme } from "./treemap";
-import { fmtBytes, fmtCount, fmtDuration, fmtMtime, fmtPct } from "./format";
+import { fmtBytes, fmtCount, fmtDuration, fmtMtime } from "./format";
 import { type ColorMode } from "./colors";
 import { pickScanRoot } from "./drives";
+
+declare const __APP_VERSION__: string;
 
 interface UiState {
   scanRoot: number | null;       // arena idx of the scanned root
@@ -78,6 +81,9 @@ const elAdminBanner = $("#admin-banner");
 const elElevateBtn = $("#elevate-btn");
 const elDismissBanner = $("#dismiss-banner");
 const elCtxMenu = $("#ctx-menu");
+const elStatusLoading = $("#status-loading");
+const elStatusLoadingText = $("#status-loading-text");
+const elStatusVersion = $("#status-version");
 
 const treemap = new Treemap(
   elTreemap,
@@ -108,11 +114,8 @@ const treemap = new Treemap(
   await onScanCancelled(handleScanCancelled);
 
   // CLI auto-scan: backend emits `scan:auto` with a path if `--scan <p>` was given.
-  const { listen } = await import("@tauri-apps/api/event");
-  listen<string>("scan:auto", (e) => {
-    if (typeof e.payload === "string" && e.payload.length > 0) {
-      startScan(e.payload);
-    }
+  onScanAuto((path) => {
+    if (typeof path === "string" && path.length > 0) startScan(path);
   });
 
   // Scan triggers.
@@ -195,6 +198,11 @@ const treemap = new Treemap(
   ro.observe(elTreemapPane);
   sizeTreemap();
   renderEmptyState();
+
+  // Stamp the version into the status bar from the build-time constant
+  // injected by Vite (vite.config.ts reads package.json). No more drift.
+  elStatusVersion.textContent = "v" + __APP_VERSION__;
+
 })();
 
 // ---------- scan flow ----------
@@ -247,7 +255,14 @@ async function handleScanComplete(p: {
   elScanningOverlay.hidden = true;
   elTreemapEmpty.hidden = true;
   (elRescanBtn as HTMLButtonElement).disabled = false;
-  await refreshAll();
+  expandedIdxs.clear();
+  const seq = ++drillSeq;
+  pushLoading("Rendering…");
+  try {
+    await refreshAll(seq);
+  } finally {
+    popLoading();
+  }
   elStatusSummary.textContent =
     `${fmtCount(p.files)} files · ${fmtCount(p.dirs)} folders · ${fmtBytes(p.bytes)} · scanned in ${fmtDuration(p.duration_ms)}`;
 }
@@ -270,18 +285,48 @@ function selectNode(idx: number) {
   });
 }
 
+/** Bumped on every drill/refresh. Promises captured before a drill check the
+ *  current seq before applying their results so a slow in-flight render from
+ *  the previous drill doesn't overwrite the new view. Also kills the perceived
+ *  "freeze" from racing renders piling up. */
+let drillSeq = 0;
+let inFlightDrills = 0;
+
+function pushLoading(text: string) {
+  inFlightDrills++;
+  elStatusLoadingText.textContent = text;
+  elStatusLoading.hidden = false;
+}
+function popLoading() {
+  inFlightDrills = Math.max(0, inFlightDrills - 1);
+  if (inFlightDrills === 0) {
+    elStatusLoading.hidden = true;
+  }
+}
+
 async function drillInto(idx: number) {
-  // Only drill into directories.
-  const name = state.rectNames.get(idx) || "(node)";
   if (!nameIsDir(idx)) return;
+  const name = state.rectNames.get(idx) || "(node)";
+  const seq = ++drillSeq;
   state.currentRoot = idx;
   state.selectedIdx = null;
   expandedIdxs.clear();
-  await refreshAll();
-  const summary = await ipc.nodeSummary(idx).catch(() => null);
-  elStatusSummary.textContent = summary
-    ? `${escapeText(summary.full_path)} — ${fmtBytes(state.sizeMode === "allocated" ? summary.allocated : summary.logical)} · ${fmtCount(summary.file_count)} files`
-    : name;
+  pushLoading(`Loading ${name}…`);
+  try {
+    await refreshAll(seq);
+    if (seq !== drillSeq) return;
+    const summary = await ipc.nodeSummary(idx).catch(() => null);
+    if (seq !== drillSeq) return;
+    elStatusSummary.textContent = summary
+      ? `${escapeText(summary.full_path)} — ${fmtBytes(state.sizeMode === "allocated" ? summary.allocated : summary.logical)} · ${fmtCount(summary.file_count)} files`
+      : name;
+  } catch (e) {
+    if (seq === drillSeq) {
+      elStatusSummary.textContent = `Drill failed: ${(e as Error)?.message ?? e}`;
+    }
+  } finally {
+    popLoading();
+  }
 }
 
 async function drillUp() {
@@ -289,10 +334,20 @@ async function drillUp() {
   if (state.currentRoot === state.scanRoot) return;
   const crumbs = await ipc.breadcrumb(state.currentRoot).catch(() => []);
   if (crumbs.length < 2) return;
+  const seq = ++drillSeq;
   state.currentRoot = crumbs[crumbs.length - 2].idx;
   state.selectedIdx = null;
   expandedIdxs.clear();
-  await refreshAll();
+  pushLoading("Loading…");
+  try {
+    await refreshAll(seq);
+  } catch (e) {
+    if (seq === drillSeq) {
+      elStatusSummary.textContent = `Drill failed: ${(e as Error)?.message ?? e}`;
+    }
+  } finally {
+    popLoading();
+  }
 }
 
 // We stash is_dir per visible idx because list rows and breadcrumb come from
@@ -310,19 +365,30 @@ const expandedIdxs = new Set<number>();
 async function toggleExpand(idx: number) {
   if (expandedIdxs.has(idx)) expandedIdxs.delete(idx);
   else expandedIdxs.add(idx);
+  // Re-flatten + re-render (preserves scroll position).
   await refreshDirList();
 }
 
 // ---------- refresh ----------
 
-async function refreshAll() {
+/** Refresh everything for the current root. Callers pass the drillSeq they
+ *  captured before mutating state; if a newer drill supersedes us, we discard
+ *  our results instead of writing stale data to the DOM. */
+async function refreshAll(seq: number = drillSeq) {
   if (state.currentRoot === null) return;
-  await Promise.all([refreshBreadcrumb(), refreshTreemap(), refreshDirList(), refreshTopN()]);
+  // Issue all four IPC calls in parallel. The Rust side now uses RwLock so
+  // these genuinely run concurrently on the worker pool instead of serializing.
+  const breadcrumbP = refreshBreadcrumb(seq).catch((e) => console.error("breadcrumb", e));
+  const treemapP = refreshTreemap(seq).catch((e) => console.error("treemap", e));
+  const dirListP = refreshDirList(seq).catch((e) => console.error("dirList", e));
+  const topNP = refreshTopN(seq).catch((e) => console.error("topN", e));
+  await Promise.all([breadcrumbP, treemapP, dirListP, topNP]);
 }
 
-async function refreshBreadcrumb() {
+async function refreshBreadcrumb(seq: number = drillSeq) {
   if (state.currentRoot === null) return;
   const crumbs = await ipc.breadcrumb(state.currentRoot).catch(() => []);
+  if (seq !== drillSeq) return;
   elBreadcrumb.innerHTML = "";
   crumbs.forEach((c, i) => {
     const b = document.createElement("button");
@@ -341,7 +407,7 @@ async function refreshBreadcrumb() {
   });
 }
 
-async function refreshTreemap() {
+async function refreshTreemap(seq: number = drillSeq) {
   if (state.currentRoot === null) return;
   const rect = elTreemapPane.getBoundingClientRect();
   const minPx = 3;
@@ -354,56 +420,66 @@ async function refreshTreemap() {
     maxDepth,
     state.sizeMode,
   );
-  // Build a name lookup from a one-deep list_dir call so the treemap can label
-  // the visible directories. For non-list visible idxs (depth >= 2), we leave
-  // the name empty; the dir header label only renders when the rect is large.
+  if (seq !== drillSeq) return;
+  // The Rust Rect now carries its `name`, so we don't need a separate name-
+  // lookup IPC call — the treemap renderer reads name straight off each rect.
   state.rectNames.clear();
   dirIdxs.clear();
-  // We need names for all visible idxs; fetch the full direct child list and
-  // also the deeper rects' names via repeated queries is wasteful — instead
-  // fetch a flat name map by walking the visible rects and looking up siblings.
-  // v0.1: only label depth-1 rects (parents seen directly). For deeper rects,
-  // use a synthetic "" so the canvas skips the label.
-  const directChildren = await ipc.listDir(state.currentRoot, "size_desc", 0, 4096, state.sizeMode);
-  for (const r of directChildren) {
-    state.rectNames.set(r.idx, r.name);
-    if (r.is_dir) dirIdxs.add(r.idx);
-  }
-  // Also record dir-ness for visible rects so right-click knows.
   for (const r of rects) {
+    state.rectNames.set(r.idx, r.name);
     if (r.is_dir) dirIdxs.add(r.idx);
   }
   treemap.setData(rects, state.currentRoot, (idx) => state.rectNames.get(idx) || "");
 }
 
-async function refreshDirList() {
+/** Flat tree-with-expansion: each row carries the depth it should indent at. */
+interface FlatRow { row: DirRow; depth: number; }
+
+/** Cap how many rows we ever put in the DOM at once. The render path is O(N)
+ *  in row count — a real virtualizer is a v0.1.4 task — but at 500 the wall-
+ *  clock is around 100 ms, which is responsive enough to ship as a hotfix. */
+const RENDER_ROW_CAP = 500;
+
+async function refreshDirList(seq: number = drillSeq) {
   if (state.currentRoot === null) return;
-  const saved = elDirList.scrollTop;
+  const PER_LEVEL_LIMIT = 4096;
+  const next: FlatRow[] = [];
+
+  const visit = async (parent: number, depth: number): Promise<void> => {
+    const rows = await ipc.listDir(parent, state.sort, 0, PER_LEVEL_LIMIT, state.sizeMode);
+    if (seq !== drillSeq) return;
+    for (const row of rows) {
+      if (row.is_dir) dirIdxs.add(row.idx);
+      state.rectNames.set(row.idx, row.name);
+      next.push({ row, depth });
+      if (expandedIdxs.has(row.idx) && row.is_dir && !row.is_reparse) {
+        await visit(row.idx, depth + 1);
+        if (seq !== drillSeq) return;
+      }
+    }
+  };
+  await visit(state.currentRoot, 0);
+  if (seq !== drillSeq) return;
+
+  const renderCount = Math.min(next.length, RENDER_ROW_CAP);
   const frag = document.createDocumentFragment();
-  await renderListLevel(state.currentRoot, 0, frag);
+  for (let i = 0; i < renderCount; i++) {
+    frag.appendChild(renderRow(next[i].row, next[i].depth));
+  }
   elDirList.innerHTML = "";
   elDirList.appendChild(frag);
-  elDirList.scrollTop = saved;
-}
-
-/** Recursively render one parent's children at the given depth, descending into
- *  any expanded directories (chevron-toggle). Each row gets a left-indent of
- *  16px per level so the hierarchy reads at a glance. */
-async function renderListLevel(parent: number, depth: number, frag: DocumentFragment) {
-  const rows = await ipc.listDir(parent, state.sort, 0, 1000, state.sizeMode);
-  for (const row of rows) {
-    if (row.is_dir) dirIdxs.add(row.idx);
-    state.rectNames.set(row.idx, row.name);
-    frag.appendChild(renderRow(row, depth));
-    if (expandedIdxs.has(row.idx) && row.is_dir && !row.is_reparse) {
-      await renderListLevel(row.idx, depth + 1, frag);
-    }
+  if (next.length > RENDER_ROW_CAP) {
+    const more = document.createElement("div");
+    more.style.cssText = "padding:8px 12px;color:var(--text-muted);font-size:11.5px";
+    more.textContent = `… ${next.length - RENDER_ROW_CAP} more rows hidden (v0.1.4 will virtualize). Click chevrons to drill into specific subtrees.`;
+    elDirList.appendChild(more);
   }
 }
 
-async function refreshTopN() {
+async function refreshTopN(seq: number = drillSeq) {
   if (state.currentRoot === null) return;
   const t = await ipc.topN(state.currentRoot, 50, state.sizeMode);
+  if (seq !== drillSeq) return;
   elTopFilesList.innerHTML = "";
   elTopDirsList.innerHTML = "";
   const ff = document.createDocumentFragment();

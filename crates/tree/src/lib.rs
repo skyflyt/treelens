@@ -529,10 +529,19 @@ impl Default for LayoutOpts {
     }
 }
 
+/// Hard upper bound on rects returned from `treemap_layout`. The canvas
+/// renderer is O(N) per draw, the JSON serialization is O(N), and the WebView
+/// has to allocate one JS object per rect — so an unbounded result will freeze
+/// the UI on a pathological subtree even when `min_px` should have filtered it
+/// down. 8192 is plenty for any reasonable viewport (4K + min_px=3 caps around
+/// ~5K) and stays well under 2 MB of JSON.
+pub const MAX_RECTS: usize = 8192;
+
 /// Compute a squarified treemap layout for the subtree rooted at `root_idx`.
 ///
 /// Returns a flat list of rects (one per visible node). Frontend renders the
-/// list directly. Layout is bounded in size by the `min_px` cutoff.
+/// list directly. Layout is bounded in size by the `min_px` cutoff AND by a
+/// hard `MAX_RECTS` cap as a defensive ceiling.
 pub fn treemap_layout(tree: &Tree, root_idx: u32, opts: LayoutOpts, mode: SizeMode) -> Vec<Rect> {
     let mut out: Vec<Rect> = Vec::new();
     let root_size = tree.size_of(root_idx, mode);
@@ -583,7 +592,7 @@ fn layout_recurse(
     opts: &LayoutOpts,
     out: &mut Vec<Rect>,
 ) {
-    if depth >= opts.max_depth {
+    if depth >= opts.max_depth || out.len() >= MAX_RECTS {
         return;
     }
     let kids: Vec<u32> = tree.child_indexes(parent).collect();
@@ -666,6 +675,9 @@ fn layout_recurse(
             let iw = (rw - pad * 2.0).max(0.0);
             let ih = (rh - pad * 2.0).max(0.0);
             if iw >= opts.min_px && ih >= opts.min_px {
+                if out.len() >= MAX_RECTS {
+                    return;
+                }
                 let node = &tree.nodes[*idx as usize];
                 out.push(Rect {
                     idx: *idx,
