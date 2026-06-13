@@ -392,7 +392,11 @@ const treemap = new Treemap(
         return;
       case "Delete":
         e.preventDefault();
-        if (state.selectedIdx !== null) confirmRecycle(state.selectedIdx);
+        if (state.selectedIdx !== null) {
+          // Shift+Delete = permanent delete (Windows convention); Delete = recycle.
+          if (e.shiftKey) confirmDeletePermanent(state.selectedIdx);
+          else confirmRecycle(state.selectedIdx);
+        }
         return;
       case "Enter":
         e.preventDefault();
@@ -1134,6 +1138,15 @@ function openCtxMenu(idx: number, x: number, y: number) {
       shortcut: "Del",
       action: () => confirmRecycle(idx),
     },
+    {
+      label:
+        state.selectedIdxs.size > 1 && state.selectedIdxs.has(idx)
+          ? `Delete ${state.selectedIdxs.size} items permanently…`
+          : "Delete permanently…",
+      danger: true,
+      shortcut: "Shift+Del",
+      action: () => confirmDeletePermanent(idx),
+    },
   ];
   const menu = elCtxMenu;
   menu.innerHTML = "";
@@ -1227,6 +1240,50 @@ async function confirmRecycle(idx: number) {
     if (state.scanRootPath) startScan(state.scanRootPath);
   } catch (e) {
     alert(`Recycle failed: ${(e as Error).message ?? e}`);
+  }
+}
+
+/** Permanently delete (bypasses the Recycle Bin — unrecoverable). Gated behind
+ *  a deliberately strong confirmation that names what will be destroyed. */
+async function confirmDeletePermanent(idx: number) {
+  const multi =
+    state.selectedIdxs.size > 1 && state.selectedIdxs.has(idx)
+      ? [...state.selectedIdxs]
+      : null;
+
+  if (multi) {
+    const ok = confirm(
+      `⚠ PERMANENTLY delete ${multi.length} items?\n\n` +
+        `This bypasses the Recycle Bin. The data CANNOT be recovered.\n\n` +
+        `Click OK only if you are sure.`,
+    );
+    if (!ok) return;
+    try {
+      const n = await ipc.deletePermanentNodes(multi);
+      elStatusSummary.textContent = `Permanently deleted ${n} items`;
+      state.selectedIdxs.clear();
+      if (state.scanRootPath) startScan(state.scanRootPath);
+    } catch (e) {
+      alert(`Delete failed: ${(e as Error).message ?? e}`);
+    }
+    return;
+  }
+
+  const path = await ipc.copyPath(idx).catch(() => "");
+  const summary = await ipc.nodeSummary(idx).catch(() => null);
+  const size = summary ? fmtBytes(state.sizeMode === "allocated" ? summary.allocated : summary.logical) : "";
+  const ok = confirm(
+    `⚠ PERMANENTLY delete this ${summary?.is_dir ? "folder and everything in it" : "file"}?\n\n` +
+      `${path}\n${size ? `(${size})` : ""}\n\n` +
+      `This bypasses the Recycle Bin. The data CANNOT be recovered.`,
+  );
+  if (!ok) return;
+  try {
+    await ipc.deletePermanentNodes([idx]);
+    elStatusSummary.textContent = `Permanently deleted ${path}`;
+    if (state.scanRootPath) startScan(state.scanRootPath);
+  } catch (e) {
+    alert(`Delete failed: ${(e as Error).message ?? e}`);
   }
 }
 

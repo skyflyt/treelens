@@ -4,6 +4,19 @@ All notable changes to Treelens are documented here.
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning is [SemVer](https://semver.org/) (0.x while pre-1.0).
 
+## [0.3.3] — 2026-06-13
+
+### Added
+- **Permanent delete** (bypasses the Recycle Bin). Right-click → "Delete
+  permanently…" or **Shift+Delete**; works on a single item or a whole
+  multi-selection. Gated behind a deliberately strong, unrecoverable-warning
+  confirmation. Implemented via `IFileOperation` without the recycle/undo flags
+  (`delete_permanent` / `delete_permanent_many`); `--selftest` covers it.
+  Plain **Delete** / "Move to Recycle Bin" is unchanged (still the safe,
+  undo-able default).
+
+[0.3.3]: https://github.com/skyflyt/treelens/releases/tag/v0.3.3
+
 ## [0.3.2] — 2026-06-13
 
 ### Fixed

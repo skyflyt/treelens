@@ -657,6 +657,24 @@ fn recycle_nodes(
     Ok(paths.len() as u32)
 }
 
+/// PERMANENTLY delete one or more nodes (bypasses the Recycle Bin —
+/// unrecoverable). The frontend gates this behind an explicit confirmation.
+#[tauri::command]
+fn delete_permanent_nodes(
+    tab: u32,
+    idxs: Vec<u32>,
+    state: State<'_, AppState>,
+) -> Result<u32, CommandError> {
+    let mut paths = Vec::with_capacity(idxs.len());
+    for idx in &idxs {
+        paths.push(node_path(state.inner(), tab, *idx)?);
+    }
+    fileops::delete_permanent_many(&paths).map_err(|e| CommandError {
+        message: format!("{e}"),
+    })?;
+    Ok(paths.len() as u32)
+}
+
 #[derive(Debug, Serialize)]
 struct DriveEntry {
     letter: String,
@@ -1001,6 +1019,21 @@ pub fn selftest() -> i32 {
             ok = false;
         }
 
+        // Permanent delete (bypasses recycle bin).
+        let perm = scratch.join("perm.txt");
+        std::fs::write(&perm, b"delete me forever").ok();
+        match fileops::delete_permanent(&perm) {
+            Ok(()) if !perm.exists() => eprintln!("PASS delete_permanent -> gone from disk"),
+            Ok(()) => {
+                eprintln!("FAIL delete_permanent: still on disk");
+                ok = false;
+            }
+            Err(e) => {
+                eprintln!("FAIL delete_permanent: {e}");
+                ok = false;
+            }
+        }
+
         // --- Analysis: checksums, compare, and stego round-trips ---
         // (scratch dir still exists from the file-op phase; reuse it.)
         ok &= selftest_analysis(&scratch);
@@ -1145,6 +1178,7 @@ pub fn run() {
             save_bytes,
             recycle_node,
             recycle_nodes,
+            delete_permanent_nodes,
             list_drives,
             is_elevated,
             relaunch_as_admin,

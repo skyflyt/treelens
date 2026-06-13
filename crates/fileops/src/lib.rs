@@ -121,6 +121,44 @@ pub fn recycle_many(paths: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
+/// Flags for a **permanent** delete: no recycle, no undo. Same quiet shell
+/// operation as recycle, but the bytes are gone — the caller MUST have
+/// confirmed with the user first.
+fn permanent_delete_flags() -> FILEOPERATION_FLAGS {
+    FILEOPERATION_FLAGS(FOF_NOCONFIRMATION.0)
+}
+
+/// Permanently delete a path (bypasses the Recycle Bin — unrecoverable).
+pub fn delete_permanent(path: impl AsRef<Path>) -> Result<()> {
+    let _com = ComGuard::new()?;
+    let item = shell_item_for(path.as_ref())?;
+    unsafe {
+        let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
+        op.SetOperationFlags(permanent_delete_flags())?;
+        op.DeleteItem(&item, None)?;
+        op.PerformOperations()?;
+    }
+    Ok(())
+}
+
+/// Permanently delete several paths in one operation (unrecoverable).
+pub fn delete_permanent_many(paths: &[PathBuf]) -> Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let _com = ComGuard::new()?;
+    unsafe {
+        let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
+        op.SetOperationFlags(permanent_delete_flags())?;
+        for p in paths {
+            let item = shell_item_for(p)?;
+            op.DeleteItem(&item, None)?;
+        }
+        op.PerformOperations()?;
+    }
+    Ok(())
+}
+
 /// Open Explorer with the given file pre-selected.
 pub fn open_in_explorer(path: impl AsRef<Path>) -> Result<()> {
     use windows::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
