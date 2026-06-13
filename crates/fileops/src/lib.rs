@@ -256,6 +256,108 @@ pub fn relaunch_as_admin() -> Result<()> {
     Ok(())
 }
 
+// ---------- Create / rename / open (edit) ----------
+
+/// Create a new empty folder named `name` inside `parent_dir`. Returns the new
+/// folder's full path. Fails if it already exists.
+pub fn create_folder(parent_dir: impl AsRef<Path>, name: &str) -> Result<PathBuf> {
+    let name = sanitize_segment(name)?;
+    let target = parent_dir.as_ref().join(&name);
+    if target.exists() {
+        return Err(FileOpError::Failed(format!("already exists: {name}")));
+    }
+    std::fs::create_dir(&target)?;
+    Ok(target)
+}
+
+/// Create a new empty file named `name` inside `parent_dir`. Returns the new
+/// file's full path. Fails if it already exists (never truncates).
+pub fn create_file(parent_dir: impl AsRef<Path>, name: &str) -> Result<PathBuf> {
+    let name = sanitize_segment(name)?;
+    let target = parent_dir.as_ref().join(&name);
+    if target.exists() {
+        return Err(FileOpError::Failed(format!("already exists: {name}")));
+    }
+    // create_new => O_EXCL semantics, never clobbers an existing file.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)?;
+    Ok(target)
+}
+
+/// Rename a file or folder in place (same parent). `new_name` is a bare segment,
+/// not a path. Returns the new full path. Fails if the destination exists.
+pub fn rename_path(path: impl AsRef<Path>, new_name: &str) -> Result<PathBuf> {
+    let new_name = sanitize_segment(new_name)?;
+    let path = path.as_ref();
+    let parent = path
+        .parent()
+        .ok_or_else(|| FileOpError::Failed("path has no parent".into()))?;
+    let dest = parent.join(&new_name);
+    if dest.exists() {
+        return Err(FileOpError::Failed(format!("already exists: {new_name}")));
+    }
+    std::fs::rename(path, &dest)?;
+    Ok(dest)
+}
+
+/// Open a file in its default application for editing/viewing (ShellExecute
+/// "open" verb — the same as double-clicking it in Explorer).
+pub fn open_file(path: impl AsRef<Path>) -> Result<()> {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let abs = path
+        .as_ref()
+        .canonicalize()
+        .or_else(|_| Ok::<_, std::io::Error>(path.as_ref().to_path_buf()))?;
+    let s = abs.to_string_lossy().to_string();
+    let s = s.strip_prefix(r"\\?\").map(|x| x.to_string()).unwrap_or(s);
+    let file_w = to_wide(&s);
+    let open_w = to_wide("open");
+    unsafe {
+        let h = ShellExecuteW(
+            None,
+            PCWSTR(open_w.as_ptr()),
+            PCWSTR(file_w.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+        if (h.0 as isize) <= 32 {
+            return Err(FileOpError::Failed(
+                "no application is associated with this file type".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Reject path-traversal and illegal Windows filename characters. A name must be
+/// a single bare segment.
+fn sanitize_segment(name: &str) -> Result<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(FileOpError::InvalidPath("empty name".into()));
+    }
+    if trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains("..")
+        || trimmed.contains(':')
+        || trimmed.contains('<')
+        || trimmed.contains('>')
+        || trimmed.contains('"')
+        || trimmed.contains('|')
+        || trimmed.contains('?')
+        || trimmed.contains('*')
+    {
+        return Err(FileOpError::InvalidPath(format!(
+            "illegal characters in name: {trimmed}"
+        )));
+    }
+    Ok(trimmed.to_string())
+}
+
 // ---------- Super-skill helpers ----------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -357,4 +459,50 @@ pub fn find_empty_dirs(root: impl AsRef<Path>, limit: usize) -> Result<Vec<PathB
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn create_folder_and_file_then_rename() {
+        let dir = tempdir().unwrap();
+        let folder = create_folder(dir.path(), "sub").unwrap();
+        assert!(folder.is_dir());
+
+        let file = create_file(&folder, "note.txt").unwrap();
+        assert!(file.is_file());
+
+        // Renaming returns the new path and the old one is gone.
+        let renamed = rename_path(&file, "renamed.txt").unwrap();
+        assert!(renamed.is_file());
+        assert!(!file.exists());
+        assert_eq!(renamed.file_name().unwrap(), "renamed.txt");
+    }
+
+    #[test]
+    fn create_file_never_clobbers() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("exists.txt"), b"important").unwrap();
+        let err = create_file(dir.path(), "exists.txt");
+        assert!(err.is_err(), "must not overwrite an existing file");
+        // Original content untouched.
+        assert_eq!(
+            std::fs::read(dir.path().join("exists.txt")).unwrap(),
+            b"important"
+        );
+    }
+
+    #[test]
+    fn rejects_path_traversal_and_illegal_chars() {
+        let dir = tempdir().unwrap();
+        assert!(create_folder(dir.path(), "../escape").is_err());
+        assert!(create_folder(dir.path(), "a/b").is_err());
+        assert!(create_folder(dir.path(), "a\\b").is_err());
+        assert!(create_file(dir.path(), "bad:name.txt").is_err());
+        assert!(create_file(dir.path(), "  ").is_err());
+        assert!(create_file(dir.path(), "ok name.txt").is_ok());
+    }
 }

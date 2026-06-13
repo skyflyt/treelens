@@ -21,14 +21,15 @@ Grab the latest portable EXE from [Releases](https://github.com/skyflyt/treelens
 - **Scan** any folder or drive — parallel directory walk, works without admin and on any filesystem (NTFS / exFAT / ReFS / network shares).
 - **Squarified treemap** with file-type coloring, depth-tinted directory headers, hover + click + drill-in.
 - **Age-heat mode** — overlay modification age on the treemap (warm = recently changed, cold = old). One-click toggle.
-- **Side panel** with three views: folder contents, top-50 files, top-50 folders. Sortable. Inline % bars, modified date, file count.
+- **Side panel** with three views: folder contents, top-50 files, top-50 folders. Sortable. Inline % bars, modified date, file count. **Virtualized** — drills all the way down to the individual file, smooth even in folders with tens of thousands of entries.
 - **Breadcrumb** drill-up; <kbd>Backspace</kbd> as a keyboard shortcut.
 - **Size mode toggle** — "size on disk" (allocated) by default, with a one-click flip to logical bytes.
-- **Power-user file ops:**
-  - Recycle-bin delete (via Shell `IFileOperation`, undo-able from Explorer's Recycle Bin).
+- **A real file explorer with size superpowers:**
+  - **Create** new folders and files (toolbar `＋ Folder` / `＋ File`, or right-click a folder).
+  - **Rename** (<kbd>F2</kbd> or right-click), **open/edit** files in their default app (<kbd>Enter</kbd> / double-click), **delete to Recycle Bin** (<kbd>Delete</kbd>, via Shell `IFileOperation` — undo-able from Explorer).
   - "Open in Explorer" / "Open in Terminal" / "Copy full path".
   - "Find files older than 1 year (≥10 MB)" and "Find empty folders" under any subtree.
-- **Admin banner** — runs degraded without admin (and quietly nags you to relaunch elevated for full visibility).
+- **Admin banner** — runs without admin (some files hidden) and offers a one-click elevated relaunch for full visibility. File operations work identically in both modes.
 - **Light + dark theme** following OS by default; manual override is persisted.
 
 ## Why
@@ -41,9 +42,9 @@ Treelens is the answer I wanted: a parallel scanner, a visual treemap, a familia
 
 | Tier | Feature |
 | --- | --- |
-| v0.2 | NTFS MFT fast path (FSCTL_ENUM_USN_DATA) for the 10× scan speedup |
-| v0.2 | Truly portable `treelens.config.json` next to the exe |
-| v0.2 | Long-path manifest + `requireAdministrator` opt-in |
+| ✅ v0.2 | File explorer ops (create / rename / open / recycle), virtualized tree to file level |
+| v0.3 | NTFS MFT fast path (FSCTL_ENUM_USN_DATA) for the 10× scan speedup |
+| v0.3 | Truly portable `treelens.config.json` next to the exe |
 | v0.x | Search / filter, CSV/JSON export, exclude patterns, multi-drive overview |
 | v1.x | Scan history / snapshots, "what changed since last scan" diff |
 | v2.x | Duplicate finder (size-prefilter → hash) |

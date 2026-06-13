@@ -4,6 +4,48 @@ All notable changes to Treelens are documented here.
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning is [SemVer](https://semver.org/) (0.x while pre-1.0).
 
+## [0.2.0] — 2026-06-13
+
+Treelens becomes a real file explorer with size superpowers: create, rename,
+open(edit), and recycle files directly, and a tree that works all the way down
+to the individual file with no row cap.
+
+### Added
+- **Create / rename / open files** — Treelens is no longer read-only-plus-recycle:
+  - **New folder** and **New file** — toolbar buttons (`＋ Folder`, `＋ File`,
+    act on the current folder) and right-click → New folder/New file on any
+    directory. Never clobbers an existing entry.
+  - **Rename** — right-click → Rename… or press <kbd>F2</kbd> on the selected row.
+  - **Open (edit)** — right-click a file → Open (edit), press <kbd>Enter</kbd>,
+    or double-click; launches the file in its default app (ShellExecute "open").
+  - All names are validated against path-traversal and illegal Windows
+    filename characters before the operation runs.
+  - After any mutation the current root is re-scanned so the view reflects the
+    change immediately.
+- **Real side-panel virtualization.** The Contents list now renders only the
+  rows visible in the viewport (windowed by `padding-top` offset over spacer
+  divs), so a folder with tens of thousands of entries scrolls smoothly with a
+  small DOM. This replaces v0.1.3's 500-row cap — the tree is now fully
+  functional all the way down to the file level.
+- **Keyboard shortcuts:** <kbd>F2</kbd> rename, <kbd>Delete</kbd> recycle,
+  <kbd>Enter</kbd> drill-into-folder / open-file, on the selected row.
+- **`treelens --selftest`** — a built-in smoke test that exercises the
+  create → rename → recycle pipeline against a temp scratch dir and exits 0/1.
+  Used to verify the destructive ops (including under elevation) without
+  driving the WebView.
+
+### Verified
+- **Regular mode:** scanned an 800-file folder — virtualized list renders and
+  scrolls smoothly; New folder/file buttons present + enabled; admin banner
+  shown (correct, non-elevated). `--selftest`: create_folder / create_file /
+  rename / recycle / clobber-guard all PASS.
+- **Admin mode:** relaunched elevated — admin banner correctly hidden
+  (`is_elevated()` true), scan + treemap + list render; elevated `--selftest`
+  all PASS, confirming destructive ops route to the same user's Recycle Bin
+  under elevation.
+
+[0.2.0]: https://github.com/skyflyt/treelens/releases/tag/v0.2.0
+
 ## [0.1.3] — 2026-06-13
 
 ### Fixed

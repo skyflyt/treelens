@@ -370,6 +370,90 @@ fn copy_path(idx: u32, state: State<'_, AppState>) -> Result<String, CommandErro
     Ok(path.to_string_lossy().to_string())
 }
 
+/// Open a file in its default application (the "edit" action).
+#[tauri::command]
+fn open_file(idx: u32, state: State<'_, AppState>) -> Result<(), CommandError> {
+    let path = node_path(state.inner(), idx)?;
+    fileops::open_file(&path).map_err(|e| CommandError {
+        message: format!("{e}"),
+    })?;
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct MutationResult {
+    ok: bool,
+    /// Full path of the created/renamed item, so the UI can message it.
+    path: String,
+    /// The scan root path, so the frontend can re-scan to reflect the change.
+    rescan_path: String,
+}
+
+fn rescan_path_of(state: &AppStateInner) -> Result<String, CommandError> {
+    state
+        .scan_path
+        .lock()
+        .clone()
+        .map(|p| p.to_string_lossy().to_string())
+        .ok_or_else(|| CommandError {
+            message: "no active scan".into(),
+        })
+}
+
+/// Create a new folder inside the directory identified by `idx`.
+#[tauri::command]
+fn create_folder(
+    idx: u32,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<MutationResult, CommandError> {
+    let dir = node_path(state.inner(), idx)?;
+    let created = fileops::create_folder(&dir, &name).map_err(|e| CommandError {
+        message: format!("{e}"),
+    })?;
+    Ok(MutationResult {
+        ok: true,
+        path: created.to_string_lossy().to_string(),
+        rescan_path: rescan_path_of(state.inner())?,
+    })
+}
+
+/// Create a new empty file inside the directory identified by `idx`.
+#[tauri::command]
+fn create_file(
+    idx: u32,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<MutationResult, CommandError> {
+    let dir = node_path(state.inner(), idx)?;
+    let created = fileops::create_file(&dir, &name).map_err(|e| CommandError {
+        message: format!("{e}"),
+    })?;
+    Ok(MutationResult {
+        ok: true,
+        path: created.to_string_lossy().to_string(),
+        rescan_path: rescan_path_of(state.inner())?,
+    })
+}
+
+/// Rename the file or folder identified by `idx` to `new_name` (bare segment).
+#[tauri::command]
+fn rename_node(
+    idx: u32,
+    new_name: String,
+    state: State<'_, AppState>,
+) -> Result<MutationResult, CommandError> {
+    let path = node_path(state.inner(), idx)?;
+    let renamed = fileops::rename_path(&path, &new_name).map_err(|e| CommandError {
+        message: format!("{e}"),
+    })?;
+    Ok(MutationResult {
+        ok: true,
+        path: renamed.to_string_lossy().to_string(),
+        rescan_path: rescan_path_of(state.inner())?,
+    })
+}
+
 #[derive(Debug, Deserialize)]
 struct RecyclePayload {
     idx: u32,
@@ -652,6 +736,103 @@ impl std::ops::Deref for AppState {
     }
 }
 
+// ---------- Self-test ----------
+
+/// Exercise the destructive file-op pipeline end-to-end against a temp scratch
+/// dir: create folder → create file → rename → recycle. Returns a process exit
+/// code (0 = all passed). Prints a line per step to stderr.
+// The explicit `return` in the cfg(windows) arm is needed because a
+// cfg(not(windows)) block follows it in source; clippy only sees the Windows
+// target and flags it as needless.
+#[allow(clippy::needless_return)]
+pub fn selftest() -> i32 {
+    #[cfg(windows)]
+    {
+        let scratch = std::env::temp_dir().join("treelens-selftest");
+        let _ = std::fs::remove_dir_all(&scratch);
+        if let Err(e) = std::fs::create_dir_all(&scratch) {
+            eprintln!("FAIL setup: {e}");
+            return 1;
+        }
+        let mut ok = true;
+
+        match fileops::create_folder(&scratch, "newfolder") {
+            Ok(p) if p.is_dir() => eprintln!("PASS create_folder -> {}", p.display()),
+            Ok(p) => {
+                eprintln!("FAIL create_folder: not a dir {}", p.display());
+                ok = false;
+            }
+            Err(e) => {
+                eprintln!("FAIL create_folder: {e}");
+                ok = false;
+            }
+        }
+
+        let file = match fileops::create_file(&scratch, "note.txt") {
+            Ok(p) if p.is_file() => {
+                eprintln!("PASS create_file -> {}", p.display());
+                Some(p)
+            }
+            Ok(p) => {
+                eprintln!("FAIL create_file: not a file {}", p.display());
+                ok = false;
+                None
+            }
+            Err(e) => {
+                eprintln!("FAIL create_file: {e}");
+                ok = false;
+                None
+            }
+        };
+
+        if let Some(f) = file {
+            match fileops::rename_path(&f, "renamed.txt") {
+                Ok(p) if p.is_file() && !f.exists() => {
+                    eprintln!("PASS rename_path -> {}", p.display());
+                    // Recycle the renamed file.
+                    match fileops::recycle(&p) {
+                        Ok(()) if !p.exists() => eprintln!("PASS recycle -> gone from disk"),
+                        Ok(()) => {
+                            eprintln!("FAIL recycle: still on disk {}", p.display());
+                            ok = false;
+                        }
+                        Err(e) => {
+                            eprintln!("FAIL recycle: {e}");
+                            ok = false;
+                        }
+                    }
+                }
+                Ok(p) => {
+                    eprintln!("FAIL rename_path: unexpected state {}", p.display());
+                    ok = false;
+                }
+                Err(e) => {
+                    eprintln!("FAIL rename_path: {e}");
+                    ok = false;
+                }
+            }
+        }
+
+        // Clobber guard: create_file on an existing name must error.
+        std::fs::write(scratch.join("dup.txt"), b"x").ok();
+        if fileops::create_file(&scratch, "dup.txt").is_err() {
+            eprintln!("PASS create_file clobber-guard");
+        } else {
+            eprintln!("FAIL create_file clobber-guard: overwrote existing file");
+            ok = false;
+        }
+
+        let _ = std::fs::remove_dir_all(&scratch);
+        eprintln!("selftest: {}", if ok { "ALL PASS" } else { "FAILURES" });
+        return if ok { 0 } else { 1 };
+    }
+    #[cfg(not(windows))]
+    {
+        eprintln!("selftest only runs on Windows");
+        1
+    }
+}
+
 // ---------- Entry ----------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -672,6 +853,10 @@ pub fn run() {
             open_in_explorer,
             open_in_terminal,
             copy_path,
+            open_file,
+            create_folder,
+            create_file,
+            rename_node,
             recycle_node,
             list_drives,
             is_elevated,

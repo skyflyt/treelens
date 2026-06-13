@@ -63,6 +63,8 @@ const elTooltip = $("#treemap-tooltip");
 const elScanBtn = $("#scan-btn");
 const elEmptyScanBtn = $("#empty-scan-btn");
 const elRescanBtn = $("#rescan-btn");
+const elNewFolderBtn = $("#new-folder-btn");
+const elNewFileBtn = $("#new-file-btn");
 const elModeAlloc = $("#mode-allocated");
 const elModeLogical = $("#mode-logical");
 const elHeatBtn = $("#heat-btn");
@@ -128,6 +130,13 @@ const treemap = new Treemap(
   elRescanBtn.addEventListener("click", () => {
     if (state.scanRootPath) startScan(state.scanRootPath);
   });
+  // New folder / file act on the current drilled-in directory.
+  elNewFolderBtn.addEventListener("click", () => {
+    if (state.currentRoot !== null) promptCreate(state.currentRoot, "folder");
+  });
+  elNewFileBtn.addEventListener("click", () => {
+    if (state.currentRoot !== null) promptCreate(state.currentRoot, "file");
+  });
   elScanCancel.addEventListener("click", () => {
     ipc.scanCancel().catch(() => {});
   });
@@ -185,6 +194,21 @@ const treemap = new Treemap(
     } else if (e.key === "F5") {
       e.preventDefault();
       if (state.scanRootPath) startScan(state.scanRootPath);
+    } else if (e.key === "F2") {
+      e.preventDefault();
+      if (state.selectedIdx !== null) promptRename(state.selectedIdx);
+    } else if (e.key === "Delete") {
+      e.preventDefault();
+      if (state.selectedIdx !== null) confirmRecycle(state.selectedIdx);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (state.selectedIdx !== null) {
+        if (nameIsDir(state.selectedIdx) && !reparseIdxs.has(state.selectedIdx)) {
+          drillInto(state.selectedIdx);
+        } else {
+          ipc.openFile(state.selectedIdx).catch(() => {});
+        }
+      }
     } else if (e.key === "Escape") {
       closeCtxMenu();
     }
@@ -203,6 +227,22 @@ const treemap = new Treemap(
   // injected by Vite (vite.config.ts reads package.json). No more drift.
   elStatusVersion.textContent = "v" + __APP_VERSION__;
 
+  // Virtual scroller: re-render the visible window on scroll, coalesced to one
+  // render per animation frame so fast scrolling stays smooth.
+  let scrollPending = false;
+  elDirList.addEventListener("scroll", () => {
+    if (scrollPending || flatRows.length === 0) return;
+    scrollPending = true;
+    requestAnimationFrame(() => {
+      scrollPending = false;
+      renderDirWindow(true);
+    });
+  });
+  // Re-window when the side panel resizes (different number of rows fit).
+  const dirRo = new ResizeObserver(() => {
+    if (flatRows.length > 0) renderDirWindow(true);
+  });
+  dirRo.observe(elDirList);
 })();
 
 // ---------- scan flow ----------
@@ -255,6 +295,8 @@ async function handleScanComplete(p: {
   elScanningOverlay.hidden = true;
   elTreemapEmpty.hidden = true;
   (elRescanBtn as HTMLButtonElement).disabled = false;
+  (elNewFolderBtn as HTMLButtonElement).disabled = false;
+  (elNewFileBtn as HTMLButtonElement).disabled = false;
   expandedIdxs.clear();
   const seq = ++drillSeq;
   pushLoading("Rendering…");
@@ -353,6 +395,9 @@ async function drillUp() {
 // We stash is_dir per visible idx because list rows and breadcrumb come from
 // different IPC calls; nameIsDir checks the most recent dir list and treemap rects.
 const dirIdxs = new Set<number>();
+// Reparse points (junctions/symlinks) — leaves we never descend or treat as
+// real folders for create-inside operations.
+const reparseIdxs = new Set<number>();
 function nameIsDir(idx: number): boolean {
   return dirIdxs.has(idx);
 }
@@ -365,8 +410,8 @@ const expandedIdxs = new Set<number>();
 async function toggleExpand(idx: number) {
   if (expandedIdxs.has(idx)) expandedIdxs.delete(idx);
   else expandedIdxs.add(idx);
-  // Re-flatten + re-render (preserves scroll position).
-  await refreshDirList();
+  // Re-flatten + re-render, keeping the user's scroll position (expand-in-place).
+  await refreshDirList(drillSeq, true);
 }
 
 // ---------- refresh ----------
@@ -432,25 +477,33 @@ async function refreshTreemap(seq: number = drillSeq) {
   treemap.setData(rects, state.currentRoot, (idx) => state.rectNames.get(idx) || "");
 }
 
+function noteRow(row: DirRow) {
+  if (row.is_dir) dirIdxs.add(row.idx);
+  if (row.is_reparse) reparseIdxs.add(row.idx);
+  state.rectNames.set(row.idx, row.name);
+}
+
 /** Flat tree-with-expansion: each row carries the depth it should indent at. */
 interface FlatRow { row: DirRow; depth: number; }
 
-/** Cap how many rows we ever put in the DOM at once. The render path is O(N)
- *  in row count — a real virtualizer is a v0.1.4 task — but at 500 the wall-
- *  clock is around 100 ms, which is responsive enough to ship as a hotfix. */
-const RENDER_ROW_CAP = 500;
+const ROW_HEIGHT = 26;       // px; must match .list-row height in CSS
+const WINDOW_BUFFER = 8;     // extra rows above/below the viewport
 
-async function refreshDirList(seq: number = drillSeq) {
+/** The full flattened row list for the current view (root's children + any
+ *  inline-expanded subtrees). The virtual scroller renders only the slice that
+ *  is on screen, so this can hold tens of thousands of rows cheaply. */
+let flatRows: FlatRow[] = [];
+
+async function refreshDirList(seq: number = drillSeq, preserveScroll = false) {
   if (state.currentRoot === null) return;
-  const PER_LEVEL_LIMIT = 4096;
+  const PER_LEVEL_LIMIT = 8192;
   const next: FlatRow[] = [];
 
   const visit = async (parent: number, depth: number): Promise<void> => {
     const rows = await ipc.listDir(parent, state.sort, 0, PER_LEVEL_LIMIT, state.sizeMode);
     if (seq !== drillSeq) return;
     for (const row of rows) {
-      if (row.is_dir) dirIdxs.add(row.idx);
-      state.rectNames.set(row.idx, row.name);
+      noteRow(row);
       next.push({ row, depth });
       if (expandedIdxs.has(row.idx) && row.is_dir && !row.is_reparse) {
         await visit(row.idx, depth + 1);
@@ -461,19 +514,45 @@ async function refreshDirList(seq: number = drillSeq) {
   await visit(state.currentRoot, 0);
   if (seq !== drillSeq) return;
 
-  const renderCount = Math.min(next.length, RENDER_ROW_CAP);
+  flatRows = next;
+  // Fresh drill resets scroll to top; chevron-expands keep the user in place.
+  renderDirWindow(preserveScroll);
+}
+
+/** Render only the rows visible in the viewport (windowed virtualization).
+ *
+ *  Layout: a single content div whose total height is `rows * ROW_HEIGHT`
+ *  (via a spacer at the bottom), with the visible slice rendered after a
+ *  `padding-top` equal to `firstVisible * ROW_HEIGHT`. Using padding-top
+ *  rather than absolute/transform positioning keeps the rows in normal flow,
+ *  which is what made an earlier transform-based attempt render blank. */
+function renderDirWindow(preserveScroll: boolean) {
+  const total = flatRows.length;
+  const scrollTop = preserveScroll ? elDirList.scrollTop : 0;
+  if (!preserveScroll) elDirList.scrollTop = 0;
+
+  const viewportH = elDirList.clientHeight || 600;
+  const first = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - WINDOW_BUFFER);
+  const visibleCount = Math.ceil(viewportH / ROW_HEIGHT) + WINDOW_BUFFER * 2;
+  const last = Math.min(total, first + visibleCount);
+
   const frag = document.createDocumentFragment();
-  for (let i = 0; i < renderCount; i++) {
-    frag.appendChild(renderRow(next[i].row, next[i].depth));
+  // Top spacer pushes the visible slice down to its real scroll offset.
+  const topPad = document.createElement("div");
+  topPad.style.height = `${first * ROW_HEIGHT}px`;
+  frag.appendChild(topPad);
+
+  for (let i = first; i < last; i++) {
+    frag.appendChild(renderRow(flatRows[i].row, flatRows[i].depth));
   }
+
+  // Bottom spacer makes the scrollbar represent the full list height.
+  const bottomPad = document.createElement("div");
+  bottomPad.style.height = `${Math.max(0, (total - last) * ROW_HEIGHT)}px`;
+  frag.appendChild(bottomPad);
+
   elDirList.innerHTML = "";
   elDirList.appendChild(frag);
-  if (next.length > RENDER_ROW_CAP) {
-    const more = document.createElement("div");
-    more.style.cssText = "padding:8px 12px;color:var(--text-muted);font-size:11.5px";
-    more.textContent = `… ${next.length - RENDER_ROW_CAP} more rows hidden (v0.1.4 will virtualize). Click chevrons to drill into specific subtrees.`;
-    elDirList.appendChild(more);
-  }
 }
 
 async function refreshTopN(seq: number = drillSeq) {
@@ -484,14 +563,13 @@ async function refreshTopN(seq: number = drillSeq) {
   elTopDirsList.innerHTML = "";
   const ff = document.createDocumentFragment();
   for (const r of t.files) {
-    state.rectNames.set(r.idx, r.name);
+    noteRow(r);
     ff.appendChild(renderRow(r));
   }
   elTopFilesList.appendChild(ff);
   const fd = document.createDocumentFragment();
   for (const r of t.dirs) {
-    state.rectNames.set(r.idx, r.name);
-    if (r.is_dir) dirIdxs.add(r.idx);
+    noteRow(r);
     fd.appendChild(renderRow(r));
   }
   elTopDirsList.appendChild(fd);
@@ -499,7 +577,10 @@ async function refreshTopN(seq: number = drillSeq) {
 
 function renderRow(row: DirRow, depth: number = 0): HTMLElement {
   const el = document.createElement("div");
-  el.className = "list-row" + (row.is_dir ? " dir" : "");
+  el.className =
+    "list-row" +
+    (row.is_dir ? " dir" : "") +
+    (row.idx === state.selectedIdx ? " selected" : "");
   el.dataset.idx = String(row.idx);
   if (depth > 0) {
     el.style.paddingLeft = `${10 + 16 * depth}px`;
@@ -633,19 +714,27 @@ interface CtxItem { label: string; danger?: boolean; shortcut?: string; action: 
 function openCtxMenu(idx: number, x: number, y: number) {
   closeCtxMenu();
   const isDir = nameIsDir(idx);
+  const isReparse = reparseIdxs.has(idx);
   const items: CtxItem[] = [
     isDir
       ? { label: "Drill into folder", shortcut: "Enter", action: () => drillInto(idx) }
-      : { label: "Open in Explorer", action: () => ipc.openInExplorer(idx).catch(() => {}) },
+      : { label: "Open (edit)", shortcut: "Enter", action: () => ipc.openFile(idx).catch((e) => alert(`Open failed: ${(e as Error)?.message ?? e}`)) },
     { label: "Reveal in Explorer", action: () => ipc.openInExplorer(idx).catch(() => {}) },
-    ...(isDir ? [{ label: "Open in Terminal", action: () => ipc.openInTerminal(idx).catch(() => {}) }] : []),
+    ...(isDir && !isReparse ? [{ label: "Open in Terminal", action: () => ipc.openInTerminal(idx).catch(() => {}) }] : []),
     { label: "Copy full path", action: async () => {
       try {
         const p = await ipc.copyPath(idx);
         await navigator.clipboard.writeText(p);
       } catch {}
     } },
-    ...(isDir ? [
+    { label: "—", action: () => {} },
+    ...(isDir && !isReparse ? [
+      { label: "New folder…", action: () => promptCreate(idx, "folder") },
+      { label: "New file…", action: () => promptCreate(idx, "file") },
+    ] : []),
+    { label: "Rename…", shortcut: "F2", action: () => promptRename(idx) },
+    ...(isDir && !isReparse ? [
+      { label: "—", action: () => {} },
       { label: "Find files older than 1 year (≥10 MB)", action: () => runSuperSkillOldFiles(idx) },
       { label: "Find empty folders", action: () => runSuperSkillEmpty(idx) },
     ] : []),
@@ -678,6 +767,40 @@ function openCtxMenu(idx: number, x: number, y: number) {
 
 function closeCtxMenu() {
   elCtxMenu.hidden = true;
+}
+
+async function promptCreate(parentIdx: number, kind: "folder" | "file") {
+  const label = kind === "folder" ? "New folder name:" : "New file name:";
+  const placeholder = kind === "folder" ? "New folder" : "untitled.txt";
+  const name = prompt(label, placeholder);
+  if (name === null) return; // cancelled
+  const trimmed = name.trim();
+  if (!trimmed) return;
+  try {
+    const res =
+      kind === "folder"
+        ? await ipc.createFolder(parentIdx, trimmed)
+        : await ipc.createFile(parentIdx, trimmed);
+    elStatusSummary.textContent = `Created ${res.path}`;
+    if (res.rescan_path) startScan(res.rescan_path);
+  } catch (e) {
+    alert(`Create failed: ${(e as Error)?.message ?? e}`);
+  }
+}
+
+async function promptRename(idx: number) {
+  const current = state.rectNames.get(idx) || "";
+  const name = prompt("Rename to:", current);
+  if (name === null) return;
+  const trimmed = name.trim();
+  if (!trimmed || trimmed === current) return;
+  try {
+    const res = await ipc.renameNode(idx, trimmed);
+    elStatusSummary.textContent = `Renamed to ${res.path}`;
+    if (res.rescan_path) startScan(res.rescan_path);
+  } catch (e) {
+    alert(`Rename failed: ${(e as Error)?.message ?? e}`);
+  }
 }
 
 async function confirmRecycle(idx: number) {

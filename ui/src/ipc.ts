@@ -104,6 +104,14 @@ export interface OldFile {
   mtime: number;
 }
 
+export interface MutationResult {
+  ok: boolean;
+  /** Full path of the created/renamed item. */
+  path: string;
+  /** The scan root path; re-scan this to reflect the change. */
+  rescan_path: string;
+}
+
 // We use a `bigint`-tolerant number coercion since Tauri serializes u64 as number
 // in JSON and may overflow at >2^53. v0.1 accepts the JS-number cap because no
 // individual file or directory should be >9 PB.
@@ -160,6 +168,18 @@ export const ipc = {
     return invoke<{ ok: boolean; affected_idx: number; path: string }>("recycle_node", {
       payload: { idx },
     });
+  },
+  openFile(idx: number) {
+    return invoke<void>("open_file", { idx });
+  },
+  createFolder(idx: number, name: string) {
+    return invoke<MutationResult>("create_folder", { idx, name });
+  },
+  createFile(idx: number, name: string) {
+    return invoke<MutationResult>("create_file", { idx, name });
+  },
+  renameNode(idx: number, newName: string) {
+    return invoke<MutationResult>("rename_node", { idx, newName });
   },
   listDrives() {
     return invoke<DriveEntry[]>("list_drives");
