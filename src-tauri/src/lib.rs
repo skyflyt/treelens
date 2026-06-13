@@ -833,6 +833,41 @@ fn find_old_files(
     })
 }
 
+/// Find reclaimable junk (logs / temp / dumps / backups / empty files) under a
+/// node's subtree.
+#[tauri::command]
+fn find_junk(
+    tab: u32,
+    idx: u32,
+    limit: usize,
+    state: State<'_, AppState>,
+) -> Result<fileops::JunkReport, CommandError> {
+    let path = node_path(state.inner(), tab, idx)?;
+    fileops::find_junk(&path, limit).map_err(|e| CommandError {
+        message: format!("{e}"),
+    })
+}
+
+/// Recycle a list of explicit paths (used by the junk finder, whose results are
+/// raw paths rather than tree node idxs). Returns how many are gone afterward.
+#[tauri::command]
+fn recycle_paths(paths: Vec<String>) -> Result<usize, CommandError> {
+    let pbufs: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+    fileops::recycle_many(&pbufs).map_err(|e| CommandError {
+        message: format!("{e}"),
+    })?;
+    Ok(pbufs.iter().filter(|p| !p.exists()).count())
+}
+
+/// Permanently delete a list of explicit paths. Returns how many are gone.
+#[tauri::command]
+fn delete_permanent_paths(paths: Vec<String>) -> Result<usize, CommandError> {
+    let pbufs: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+    fileops::delete_permanent_many(&pbufs).map_err(|e| CommandError {
+        message: format!("{e}"),
+    })
+}
+
 #[tauri::command]
 fn find_empty_dirs(
     tab: u32,
@@ -1198,6 +1233,9 @@ pub fn run() {
             relaunch_as_admin,
             find_old_files,
             find_empty_dirs,
+            find_junk,
+            recycle_paths,
+            delete_permanent_paths,
         ])
         .setup(|app| {
             // Optional CLI: `treelens --scan <path>` auto-starts a scan after launch.

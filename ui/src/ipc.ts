@@ -104,6 +104,20 @@ export interface OldFile {
   mtime: number;
 }
 
+export interface JunkFile {
+  path: string;
+  size: number;
+  mtime: number;
+  category: string;
+}
+
+export interface JunkReport {
+  files: JunkFile[];
+  total_files: number;
+  total_bytes: number;
+  truncated: boolean;
+}
+
 export interface MutationResult {
   ok: boolean;
   /** Full path of the created/renamed item. */
@@ -275,6 +289,15 @@ export const ipc = {
   },
   findEmptyDirs(idx: number, limit: number) {
     return invoke<string[]>("find_empty_dirs", { tab: activeTab, idx, limit });
+  },
+  findJunk(idx: number, limit: number) {
+    return invoke<JunkReport>("find_junk", { tab: activeTab, idx, limit });
+  },
+  recyclePaths(paths: string[]) {
+    return invoke<number>("recycle_paths", { paths });
+  },
+  deletePermanentPaths(paths: string[]) {
+    return invoke<number>("delete_permanent_paths", { paths });
   },
 };
 

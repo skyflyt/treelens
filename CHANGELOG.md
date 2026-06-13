@@ -4,6 +4,22 @@ All notable changes to Treelens are documented here.
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning is [SemVer](https://semver.org/) (0.x while pre-1.0).
 
+## [0.3.5] — 2026-06-13
+
+### Added
+- **Reclaimable-junk finder** ("🧹 Junk" toolbar button, or right-click a
+  folder → "Find reclaimable junk…"). Walks the subtree and flags throwaway
+  files — `.log` / `.odl` / `.etl` logs, `.tmp`/`.temp`, crash dumps
+  (`.dmp`/`.mdmp`), `.bak`/`.old` backups, zero-byte files, `Thumbs.db`, and
+  anything sitting inside `temp` / `cache` / `logs` folders — and shows the
+  total reclaimable space. One click to **Recycle all (safe)** or **Delete all
+  permanently**, with the same honest "deleted X of N — Y in use" reporting.
+  Real files (documents, images, code, etc.) are deliberately left alone.
+  This surfaces things like OneDrive's runaway ListSync `.odl` logs as the
+  top reclaimable item. Classification is unit-tested.
+
+[0.3.5]: https://github.com/skyflyt/treelens/releases/tag/v0.3.5
+
 ## [0.3.4] — 2026-06-13
 
 ### Fixed

@@ -162,6 +162,7 @@ async function switchToTab(id: number) {
   (elRescanBtn as HTMLButtonElement).disabled = state.scanRootPath === "";
   (elNewFolderBtn as HTMLButtonElement).disabled = state.currentRoot === null;
   (elNewFileBtn as HTMLButtonElement).disabled = state.currentRoot === null;
+  (elJunkBtn as HTMLButtonElement).disabled = state.currentRoot === null;
 }
 
 async function newTab() {
@@ -207,6 +208,7 @@ const elEmptyScanBtn = $("#empty-scan-btn");
 const elRescanBtn = $("#rescan-btn");
 const elNewFolderBtn = $("#new-folder-btn");
 const elNewFileBtn = $("#new-file-btn");
+const elJunkBtn = $("#junk-btn");
 const elModeAlloc = $("#mode-allocated");
 const elModeLogical = $("#mode-logical");
 const elHeatBtn = $("#heat-btn");
@@ -281,6 +283,9 @@ const treemap = new Treemap(
   });
   elNewFileBtn.addEventListener("click", () => {
     if (state.currentRoot !== null) promptCreate(state.currentRoot, "file");
+  });
+  elJunkBtn.addEventListener("click", () => {
+    if (state.currentRoot !== null) runJunkFinder(state.currentRoot);
   });
   elScanCancel.addEventListener("click", () => {
     ipc.scanCancel().catch(() => {});
@@ -495,6 +500,7 @@ async function handleScanComplete(p: {
   (elRescanBtn as HTMLButtonElement).disabled = false;
   (elNewFolderBtn as HTMLButtonElement).disabled = false;
   (elNewFileBtn as HTMLButtonElement).disabled = false;
+  (elJunkBtn as HTMLButtonElement).disabled = false;
   expandedIdxs.clear();
   // Name the active tab after the scanned folder's last path segment.
   const t = tabs.find((x) => x.id === activeTabId);
@@ -1125,6 +1131,7 @@ function openCtxMenu(idx: number, x: number, y: number) {
     { label: "Rename…", shortcut: "F2", action: () => promptRename(idx) },
     ...(isDir && !isReparse ? [
       { label: "—", action: () => {} },
+      { label: "Find reclaimable junk (logs, temp, dumps)…", action: () => runJunkFinder(idx) },
       { label: "Find files older than 1 year (≥10 MB)", action: () => runSuperSkillOldFiles(idx) },
       { label: "Find empty folders", action: () => runSuperSkillEmpty(idx) },
     ] : []),
@@ -1325,6 +1332,100 @@ async function runSuperSkillEmpty(idx: number) {
   } catch (e) {
     alert(`Search failed: ${(e as Error).message ?? e}`);
   }
+}
+
+/** "Bullshit file detector": scan the subtree for reclaimable junk (logs,
+ *  temp, dumps, backups, empty files, temp/cache/log folders), show the total
+ *  reclaimable space, and offer one-click recycle or permanent delete. */
+async function runJunkFinder(idx: number) {
+  pushLoading("Scanning for reclaimable junk…");
+  let report;
+  try {
+    report = await ipc.findJunk(idx, 5000);
+  } catch (e) {
+    popLoading();
+    alert(`Scan failed: ${(e as Error).message ?? e}`);
+    return;
+  }
+  popLoading();
+  if (report.total_files === 0) {
+    alert("No obvious junk found here — no logs, temp files, dumps, or empty files.");
+    return;
+  }
+  showJunkModal(report);
+}
+
+function showJunkModal(report: import("./ipc").JunkReport) {
+  const paths = report.files.map((f) => f.path);
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  const truncNote = report.truncated
+    ? ` (showing largest ${report.files.length.toLocaleString()})`
+    : "";
+  backdrop.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <div class="modal-title">Reclaimable junk — ${report.total_files.toLocaleString()} files, ${fmtBytes(report.total_bytes)}${truncNote}</div>
+        <button class="btn ghost small" id="jk-close">✕</button>
+      </div>
+      <div class="modal-body" style="max-height:55vh; min-width: 640px"></div>
+      <div class="modal-foot">
+        <span class="muted small" style="margin-right:auto">Logs, temp, dumps, backups, empty files, and temp/cache/log folders.</span>
+        <button class="btn" id="jk-recycle">Recycle all (safe)</button>
+        <button class="btn" id="jk-delete" style="border-color:var(--danger);color:var(--danger)">Delete all permanently</button>
+        <button class="btn" id="jk-cancel">Close</button>
+      </div>
+    </div>`;
+  const body = backdrop.querySelector(".modal-body")!;
+  for (const f of report.files) {
+    const row = document.createElement("div");
+    row.className = "drive-row";
+    row.style.gridTemplateColumns = "1fr 90px 130px";
+    row.innerHTML = `
+      <div><div class="drive-label" style="font-family:var(--font-mono);font-size:11px;word-break:break-all">${escapeHtml(f.path)}</div></div>
+      <div class="drive-sub" style="text-align:right">${fmtBytes(f.size)}</div>
+      <div class="drive-sub" style="text-align:right">${escapeHtml(f.category)}</div>`;
+    body.appendChild(row);
+  }
+  document.body.appendChild(backdrop);
+  const close = () => backdrop.remove();
+  backdrop.querySelector("#jk-close")?.addEventListener("click", close);
+  backdrop.querySelector("#jk-cancel")?.addEventListener("click", close);
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+
+  backdrop.querySelector("#jk-recycle")?.addEventListener("click", async () => {
+    if (!confirm(`Move ${paths.length.toLocaleString()} junk files to the Recycle Bin?\n\nYou can restore them from Explorer if needed.`)) return;
+    close();
+    pushLoading("Recycling junk…");
+    try {
+      const n = await ipc.recyclePaths(paths);
+      elStatusSummary.textContent = `Recycled ${n} of ${paths.length} junk files (${fmtBytes(report.total_bytes)} flagged)`;
+    } catch (e) {
+      alert(`Recycle failed: ${(e as Error).message ?? e}`);
+    } finally {
+      popLoading();
+      if (state.scanRootPath) startScan(state.scanRootPath);
+    }
+  });
+
+  backdrop.querySelector("#jk-delete")?.addEventListener("click", async () => {
+    if (!confirm(`⚠ PERMANENTLY delete ${paths.length.toLocaleString()} junk files?\n\nThis bypasses the Recycle Bin and CANNOT be undone.`)) return;
+    close();
+    pushLoading("Deleting junk…");
+    try {
+      const n = await ipc.deletePermanentPaths(paths);
+      const failed = paths.length - n;
+      elStatusSummary.textContent = `Deleted ${n} of ${paths.length} junk files`;
+      if (failed > 0) {
+        alert(`Deleted ${n} of ${paths.length}.\n\n${failed} could not be deleted — likely in use by another program (e.g. OneDrive holds its current logs open). Close that program and retry.`);
+      }
+    } catch (e) {
+      alert(`Delete failed: ${(e as Error).message ?? e}`);
+    } finally {
+      popLoading();
+      if (state.scanRootPath) startScan(state.scanRootPath);
+    }
+  });
 }
 
 function showResultsModal(title: string, rows: { label: string; sub: string }[]) {

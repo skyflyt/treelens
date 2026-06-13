@@ -421,6 +421,133 @@ pub struct OldFile {
     pub mtime: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JunkFile {
+    pub path: PathBuf,
+    pub size: u64,
+    pub mtime: i64,
+    /// Why it was flagged: "log", "temp", "crash dump", "backup", "empty",
+    /// "thumbnail cache", or "in temp/cache/logs folder".
+    pub category: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JunkReport {
+    pub files: Vec<JunkFile>,
+    /// Total junk files found (may exceed `files.len()` if capped).
+    pub total_files: u64,
+    /// Total reclaimable bytes across ALL matches (not just the capped list).
+    pub total_bytes: u64,
+    pub truncated: bool,
+}
+
+/// Classify a file as deletable "junk" by extension, name, size, and location.
+/// Conservative on purpose — only clear-cut throwaway categories. Returns the
+/// category label, or None to keep the file.
+fn classify_junk(path: &Path, size: u64, in_junk_dir: bool) -> Option<&'static str> {
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let ext = path
+        .extension()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+
+    // Recognized throwaway extensions.
+    match ext.as_str() {
+        "log" | "odl" | "etl" | "evtx" => return Some("log"),
+        "tmp" | "temp" | "crdownload" | "part" | "partial" => return Some("temp"),
+        "dmp" | "mdmp" | "hdmp" => return Some("crash dump"),
+        "bak" | "old" | "orig" => return Some("backup"),
+        "chk" => return Some("disk-check fragment"),
+        _ => {}
+    }
+    if name == "thumbs.db" {
+        return Some("thumbnail cache");
+    }
+    // Zero-byte files are almost always leftovers.
+    if size == 0 {
+        return Some("empty");
+    }
+    // Anything sitting inside a temp/cache/logs directory.
+    if in_junk_dir {
+        return Some("in temp/cache/logs folder");
+    }
+    None
+}
+
+fn is_junk_dir_name(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    matches!(
+        n.as_str(),
+        "temp" | "tmp" | "cache" | "caches" | "logs" | "logfiles" | "crashdumps" | "crashes"
+    )
+}
+
+/// Walk a subtree (no reparse traversal) and find files that look like
+/// reclaimable junk — logs, temp files, crash dumps, backups, empty files, and
+/// anything inside temp/cache/logs folders. Returns up to `limit` entries
+/// (largest first) plus the true total count/bytes across everything matched.
+pub fn find_junk(root: impl AsRef<Path>, limit: usize) -> Result<JunkReport> {
+    use std::time::UNIX_EPOCH;
+    let root = root.as_ref();
+    let mut hits: Vec<JunkFile> = Vec::new();
+    let mut total_files: u64 = 0;
+    let mut total_bytes: u64 = 0;
+    // Stack carries (dir, whether we're already inside a temp/cache/logs dir).
+    let mut stack: Vec<(PathBuf, bool)> = vec![(root.to_path_buf(), false)];
+    while let Some((dir, in_junk_dir)) = stack.pop() {
+        let Ok(iter) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for ent in iter.flatten() {
+            let Ok(ft) = ent.file_type() else { continue };
+            if ft.is_symlink() {
+                continue;
+            }
+            let path = ent.path();
+            if ft.is_dir() {
+                let child_in_junk = in_junk_dir
+                    || ent
+                        .file_name()
+                        .to_str()
+                        .map(is_junk_dir_name)
+                        .unwrap_or(false);
+                stack.push((path, child_in_junk));
+                continue;
+            }
+            let Ok(meta) = ent.metadata() else { continue };
+            let size = meta.len();
+            if let Some(category) = classify_junk(&path, size, in_junk_dir) {
+                total_files += 1;
+                total_bytes = total_bytes.saturating_add(size);
+                let mtime = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                hits.push(JunkFile {
+                    path,
+                    size,
+                    mtime,
+                    category: category.to_string(),
+                });
+            }
+        }
+    }
+    hits.sort_unstable_by_key(|f| std::cmp::Reverse(f.size));
+    let truncated = hits.len() > limit;
+    hits.truncate(limit);
+    Ok(JunkReport {
+        files: hits,
+        total_files,
+        total_bytes,
+        truncated,
+    })
+}
+
 /// Visit a directory tree (no recursion into reparse points) and return files
 /// whose mtime is older than `cutoff_unix_secs` and whose size is at least
 /// `min_size`. Capped at `limit` entries — beyond that the caller can re-query.
@@ -558,5 +685,50 @@ mod tests {
         assert!(create_file(dir.path(), "bad:name.txt").is_err());
         assert!(create_file(dir.path(), "  ").is_err());
         assert!(create_file(dir.path(), "ok name.txt").is_ok());
+    }
+
+    #[test]
+    fn find_junk_classifies_and_keeps_real_files() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("app.log"), vec![0u8; 1000]).unwrap();
+        std::fs::write(root.join("crash.dmp"), vec![0u8; 2000]).unwrap();
+        std::fs::write(root.join("data.bak"), vec![0u8; 500]).unwrap();
+        std::fs::write(root.join("empty.txt"), b"").unwrap();
+        std::fs::write(root.join("keep.txt"), b"real content").unwrap();
+        std::fs::write(root.join("photo.png"), vec![0u8; 4000]).unwrap();
+        // A file inside a logs/ dir with an otherwise-neutral extension.
+        std::fs::create_dir(root.join("logs")).unwrap();
+        std::fs::write(root.join("logs").join("trace.dat"), vec![0u8; 700]).unwrap();
+
+        let report = find_junk(root, 100).unwrap();
+        let names: std::collections::HashMap<String, String> = report
+            .files
+            .iter()
+            .map(|f| {
+                (
+                    f.path.file_name().unwrap().to_string_lossy().to_string(),
+                    f.category.clone(),
+                )
+            })
+            .collect();
+
+        // Flagged with the right categories.
+        assert_eq!(names.get("app.log").map(String::as_str), Some("log"));
+        assert_eq!(names.get("crash.dmp").map(String::as_str), Some("crash dump"));
+        assert_eq!(names.get("data.bak").map(String::as_str), Some("backup"));
+        assert_eq!(names.get("empty.txt").map(String::as_str), Some("empty"));
+        assert_eq!(
+            names.get("trace.dat").map(String::as_str),
+            Some("in temp/cache/logs folder")
+        );
+        // Real files are NOT flagged.
+        assert!(!names.contains_key("keep.txt"), "real text file must be kept");
+        assert!(!names.contains_key("photo.png"), "image must be kept");
+
+        // Totals: 5 junk files, bytes = 1000+2000+500+0+700 = 4200.
+        assert_eq!(report.total_files, 5);
+        assert_eq!(report.total_bytes, 4200);
+        assert!(!report.truncated);
     }
 }
