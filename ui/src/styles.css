@@ -176,7 +176,7 @@ body {
 /* main split */
 .main {
   display: grid;
-  grid-template-columns: 1fr 380px;
+  grid-template-columns: 1fr 460px;
   min-height: 0;
 }
 .treemap-pane {
@@ -299,7 +299,7 @@ body {
 
 .list-header {
   display: grid;
-  grid-template-columns: 1fr 90px 100px 110px;
+  grid-template-columns: 1fr 78px 100px 78px;
   padding: 6px 10px;
   font-size: 11px;
   color: var(--text-muted);
@@ -313,8 +313,9 @@ body {
 .list-viewport { overflow-y: auto; flex: 1; }
 .list-row {
   display: grid;
-  grid-template-columns: 1fr 90px 100px 110px;
+  grid-template-columns: 1fr 78px 100px 78px;
   align-items: center;
+  gap: 8px;
   padding: 5px 10px;
   border-bottom: 1px solid var(--bg-elev-2);
   cursor: pointer;
@@ -323,10 +324,20 @@ body {
 }
 .list-row:hover { background: var(--row-hover); }
 .list-row.selected { background: var(--row-selected); }
+/* Name cell: flex row holding icon + filename + optional badge.
+   `min-width: 0` on both the grid item and the filename span is what
+   actually lets text-overflow: ellipsis trigger inside a CSS Grid /
+   flexbox cell — without it the cell expands to the text's intrinsic
+   width and just clips with no ellipsis. */
 .list-row .name {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+.list-row .filename {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -341,15 +352,21 @@ body {
   padding: 0 5px;
   font-size: 10px;
   text-transform: uppercase;
+  flex-shrink: 0;
 }
 .list-row .size { text-align: right; color: var(--text); }
+.list-row .pct {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
 .list-row .pct-bar {
   position: relative;
+  display: inline-block;
   height: 6px;
   background: var(--pct-bar);
   border-radius: 3px;
   overflow: hidden;
-  margin-left: auto;
   width: 90px;
 }
 .list-row .pct-fill {

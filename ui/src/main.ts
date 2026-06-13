@@ -405,7 +405,7 @@ function renderRow(row: DirRow, showFullName = false): HTMLElement {
     ? `<span class="icon">${row.is_reparse ? "↪" : "▸"}</span>`
     : `<span class="icon">·</span>`;
   el.innerHTML = `
-    <span class="name">${icon}<span title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</span>${row.is_reparse ? '<span class="badge">link</span>' : ""}</span>
+    <span class="name">${icon}<span class="filename" title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</span>${row.is_reparse ? '<span class="badge">link</span>' : ""}</span>
     <span class="size">${fmtBytes(row.size)}</span>
     <span class="pct"><span class="pct-bar"><span class="pct-fill" style="width:${(row.pct_parent * 100).toFixed(2)}%"></span></span></span>
     <span class="mtime">${fmtMtime(row.mtime)}</span>
