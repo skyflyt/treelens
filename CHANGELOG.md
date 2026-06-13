@@ -4,6 +4,22 @@ All notable changes to Treelens are documented here.
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning is [SemVer](https://semver.org/) (0.x while pre-1.0).
 
+## [0.3.6] — 2026-06-13
+
+### Fixed
+- **Permanent delete now actually deletes large batches.** It was using the
+  shell `IFileOperation` COM API, which silently no-ops / fails when driven
+  headless from a worker thread with no message pump — so deleting tens of
+  thousands of files (e.g. 110 GB of OneDrive ListSync `.odl` logs) appeared to
+  do nothing. Switched permanent delete to a direct `std::fs` syscall
+  (`DeleteFileW` / recursive `RemoveDirectory`) — the same reliable path
+  `del` / PowerShell use, which clears 100k+ files in seconds. (Confirmed
+  against the real OneDrive log folder: 113,098 / 113,099 deleted, the one
+  survivor being the single log OneDrive currently holds open.) Recycle still
+  uses the shell API (it has to, to reach the Recycle Bin).
+
+[0.3.6]: https://github.com/skyflyt/treelens/releases/tag/v0.3.6
+
 ## [0.3.5] — 2026-06-13
 
 ### Added

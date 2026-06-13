@@ -18,7 +18,7 @@ use windows::Win32::System::Com::{
 use windows::Win32::UI::Shell::{
     FileOperation, IFileOperation, IShellItem, SHCreateItemFromParsingName, FILEOPERATION_FLAGS,
     FOFX_ADDUNDORECORD, FOFX_RECYCLEONDELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION,
-    FOF_NOCONFIRMMKDIR, FOF_NOERRORUI, FOF_SILENT, FOF_WANTNUKEWARNING,
+    FOF_WANTNUKEWARNING,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -121,57 +121,46 @@ pub fn recycle_many(paths: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-/// Flags for a **permanent** delete: no recycle, no undo, and fully **headless**
-/// — no progress dialog, no confirmation, no error pop-ups. We run on a worker
-/// thread with no message pump, so any shell-shown dialog would hang or
-/// misbehave; headless avoids that. The caller reports success/failure itself
-/// by checking which paths actually disappeared (see `delete_permanent_many`).
-fn permanent_delete_flags() -> FILEOPERATION_FLAGS {
-    FILEOPERATION_FLAGS(
-        FOF_NOCONFIRMATION.0 | FOF_SILENT.0 | FOF_NOERRORUI.0 | FOF_NOCONFIRMMKDIR.0,
-    )
+/// Permanently delete one path with a direct Win32 call (`std::fs`), NOT the
+/// shell `IFileOperation` API.
+///
+/// We learned the hard way that `IFileOperation` is the wrong tool for a
+/// headless bulk permanent-delete: invoked from a worker thread with no message
+/// pump it silently fails / no-ops on large batches (this is why deleting
+/// 100k+ OneDrive log files appeared to do nothing). `DeleteFileW` /
+/// `RemoveDirectory` via `std::fs` is a plain, reliable syscall — the same
+/// thing `del` / PowerShell's `Remove-Item` use, which delete these files
+/// instantly. Directories are removed recursively.
+fn delete_one_permanent(p: &Path) -> std::io::Result<()> {
+    // A reparse point (junction/symlink) dir must be removed as a link, not
+    // recursed into — remove_dir handles that without touching the target.
+    let meta = std::fs::symlink_metadata(p)?;
+    if meta.file_type().is_dir() {
+        std::fs::remove_dir_all(p)
+    } else {
+        std::fs::remove_file(p)
+    }
 }
 
 /// Permanently delete a path (bypasses the Recycle Bin — unrecoverable).
 /// Returns true if the path is gone afterward.
 pub fn delete_permanent(path: impl AsRef<Path>) -> Result<bool> {
-    let p = path.as_ref().to_path_buf();
-    let _com = ComGuard::new()?;
-    let item = shell_item_for(&p)?;
-    unsafe {
-        let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
-        op.SetOperationFlags(permanent_delete_flags())?;
-        op.DeleteItem(&item, None)?;
-        // Ignore the aggregate HRESULT — locked items make it non-fatal-but-
-        // "aborted"; the post-check below is the source of truth.
-        let _ = op.PerformOperations();
-    }
+    let p = path.as_ref();
+    let _ = delete_one_permanent(p); // truth is the post-check, not the result
     Ok(!p.exists())
 }
 
-/// Permanently delete several paths in one operation (unrecoverable). Returns
-/// the number that are actually gone afterward — a truthful count even when
-/// some items were locked (e.g. log files held open by a running program) and
-/// silently skipped by the shell.
+/// Permanently delete several paths (unrecoverable). Returns the number that
+/// are actually gone afterward — a truthful count even when some are locked
+/// (e.g. a log a running program holds open) and can't be removed.
 pub fn delete_permanent_many(paths: &[PathBuf]) -> Result<usize> {
-    if paths.is_empty() {
-        return Ok(0);
-    }
-    let _com = ComGuard::new()?;
-    unsafe {
-        let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
-        op.SetOperationFlags(permanent_delete_flags())?;
-        for p in paths {
-            // A bad single item shouldn't abort the batch; skip ones we can't
-            // even turn into a shell item.
-            if let Ok(item) = shell_item_for(p) {
-                let _ = op.DeleteItem(&item, None);
-            }
+    let mut deleted = 0usize;
+    for p in paths {
+        let _ = delete_one_permanent(p);
+        if !p.exists() {
+            deleted += 1;
         }
-        let _ = op.PerformOperations();
     }
-    // Truth = what's actually gone from disk now.
-    let deleted = paths.iter().filter(|p| !p.exists()).count();
     Ok(deleted)
 }
 
@@ -715,7 +704,10 @@ mod tests {
 
         // Flagged with the right categories.
         assert_eq!(names.get("app.log").map(String::as_str), Some("log"));
-        assert_eq!(names.get("crash.dmp").map(String::as_str), Some("crash dump"));
+        assert_eq!(
+            names.get("crash.dmp").map(String::as_str),
+            Some("crash dump")
+        );
         assert_eq!(names.get("data.bak").map(String::as_str), Some("backup"));
         assert_eq!(names.get("empty.txt").map(String::as_str), Some("empty"));
         assert_eq!(
@@ -723,7 +715,10 @@ mod tests {
             Some("in temp/cache/logs folder")
         );
         // Real files are NOT flagged.
-        assert!(!names.contains_key("keep.txt"), "real text file must be kept");
+        assert!(
+            !names.contains_key("keep.txt"),
+            "real text file must be kept"
+        );
         assert!(!names.contains_key("photo.png"), "image must be kept");
 
         // Totals: 5 junk files, bytes = 1000+2000+500+0+700 = 4200.
