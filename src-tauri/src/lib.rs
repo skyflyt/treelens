@@ -657,22 +657,36 @@ fn recycle_nodes(
     Ok(paths.len() as u32)
 }
 
+#[derive(Debug, Serialize)]
+struct DeleteResult {
+    requested: u32,
+    deleted: u32,
+    failed: u32,
+}
+
 /// PERMANENTLY delete one or more nodes (bypasses the Recycle Bin —
 /// unrecoverable). The frontend gates this behind an explicit confirmation.
+/// Returns how many were actually removed vs. how many survived (e.g. locked
+/// files held open by another program), so the UI can report honestly.
 #[tauri::command]
 fn delete_permanent_nodes(
     tab: u32,
     idxs: Vec<u32>,
     state: State<'_, AppState>,
-) -> Result<u32, CommandError> {
+) -> Result<DeleteResult, CommandError> {
     let mut paths = Vec::with_capacity(idxs.len());
     for idx in &idxs {
         paths.push(node_path(state.inner(), tab, *idx)?);
     }
-    fileops::delete_permanent_many(&paths).map_err(|e| CommandError {
+    let requested = paths.len() as u32;
+    let deleted = fileops::delete_permanent_many(&paths).map_err(|e| CommandError {
         message: format!("{e}"),
-    })?;
-    Ok(paths.len() as u32)
+    })? as u32;
+    Ok(DeleteResult {
+        requested,
+        deleted,
+        failed: requested - deleted,
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -1023,8 +1037,8 @@ pub fn selftest() -> i32 {
         let perm = scratch.join("perm.txt");
         std::fs::write(&perm, b"delete me forever").ok();
         match fileops::delete_permanent(&perm) {
-            Ok(()) if !perm.exists() => eprintln!("PASS delete_permanent -> gone from disk"),
-            Ok(()) => {
+            Ok(true) if !perm.exists() => eprintln!("PASS delete_permanent -> gone from disk"),
+            Ok(_) => {
                 eprintln!("FAIL delete_permanent: still on disk");
                 ok = false;
             }

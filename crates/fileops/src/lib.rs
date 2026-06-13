@@ -18,7 +18,7 @@ use windows::Win32::System::Com::{
 use windows::Win32::UI::Shell::{
     FileOperation, IFileOperation, IShellItem, SHCreateItemFromParsingName, FILEOPERATION_FLAGS,
     FOFX_ADDUNDORECORD, FOFX_RECYCLEONDELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION,
-    FOF_WANTNUKEWARNING,
+    FOF_NOCONFIRMMKDIR, FOF_NOERRORUI, FOF_SILENT, FOF_WANTNUKEWARNING,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -121,42 +121,58 @@ pub fn recycle_many(paths: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-/// Flags for a **permanent** delete: no recycle, no undo. Same quiet shell
-/// operation as recycle, but the bytes are gone — the caller MUST have
-/// confirmed with the user first.
+/// Flags for a **permanent** delete: no recycle, no undo, and fully **headless**
+/// — no progress dialog, no confirmation, no error pop-ups. We run on a worker
+/// thread with no message pump, so any shell-shown dialog would hang or
+/// misbehave; headless avoids that. The caller reports success/failure itself
+/// by checking which paths actually disappeared (see `delete_permanent_many`).
 fn permanent_delete_flags() -> FILEOPERATION_FLAGS {
-    FILEOPERATION_FLAGS(FOF_NOCONFIRMATION.0)
+    FILEOPERATION_FLAGS(
+        FOF_NOCONFIRMATION.0 | FOF_SILENT.0 | FOF_NOERRORUI.0 | FOF_NOCONFIRMMKDIR.0,
+    )
 }
 
 /// Permanently delete a path (bypasses the Recycle Bin — unrecoverable).
-pub fn delete_permanent(path: impl AsRef<Path>) -> Result<()> {
+/// Returns true if the path is gone afterward.
+pub fn delete_permanent(path: impl AsRef<Path>) -> Result<bool> {
+    let p = path.as_ref().to_path_buf();
     let _com = ComGuard::new()?;
-    let item = shell_item_for(path.as_ref())?;
+    let item = shell_item_for(&p)?;
     unsafe {
         let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
         op.SetOperationFlags(permanent_delete_flags())?;
         op.DeleteItem(&item, None)?;
-        op.PerformOperations()?;
+        // Ignore the aggregate HRESULT — locked items make it non-fatal-but-
+        // "aborted"; the post-check below is the source of truth.
+        let _ = op.PerformOperations();
     }
-    Ok(())
+    Ok(!p.exists())
 }
 
-/// Permanently delete several paths in one operation (unrecoverable).
-pub fn delete_permanent_many(paths: &[PathBuf]) -> Result<()> {
+/// Permanently delete several paths in one operation (unrecoverable). Returns
+/// the number that are actually gone afterward — a truthful count even when
+/// some items were locked (e.g. log files held open by a running program) and
+/// silently skipped by the shell.
+pub fn delete_permanent_many(paths: &[PathBuf]) -> Result<usize> {
     if paths.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
     let _com = ComGuard::new()?;
     unsafe {
         let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
         op.SetOperationFlags(permanent_delete_flags())?;
         for p in paths {
-            let item = shell_item_for(p)?;
-            op.DeleteItem(&item, None)?;
+            // A bad single item shouldn't abort the batch; skip ones we can't
+            // even turn into a shell item.
+            if let Ok(item) = shell_item_for(p) {
+                let _ = op.DeleteItem(&item, None);
+            }
         }
-        op.PerformOperations()?;
+        let _ = op.PerformOperations();
     }
-    Ok(())
+    // Truth = what's actually gone from disk now.
+    let deleted = paths.iter().filter(|p| !p.exists()).count();
+    Ok(deleted)
 }
 
 /// Open Explorer with the given file pre-selected.

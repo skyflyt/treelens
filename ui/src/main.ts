@@ -1251,39 +1251,54 @@ async function confirmDeletePermanent(idx: number) {
       ? [...state.selectedIdxs]
       : null;
 
+  const idxs = multi ?? [idx];
   if (multi) {
-    const ok = confirm(
-      `⚠ PERMANENTLY delete ${multi.length} items?\n\n` +
-        `This bypasses the Recycle Bin. The data CANNOT be recovered.\n\n` +
-        `Click OK only if you are sure.`,
-    );
-    if (!ok) return;
-    try {
-      const n = await ipc.deletePermanentNodes(multi);
-      elStatusSummary.textContent = `Permanently deleted ${n} items`;
-      state.selectedIdxs.clear();
-      if (state.scanRootPath) startScan(state.scanRootPath);
-    } catch (e) {
-      alert(`Delete failed: ${(e as Error).message ?? e}`);
-    }
-    return;
+    if (
+      !confirm(
+        `⚠ PERMANENTLY delete ${multi.length} items?\n\n` +
+          `This bypasses the Recycle Bin. The data CANNOT be recovered.\n\n` +
+          `Click OK only if you are sure.`,
+      )
+    )
+      return;
+  } else {
+    const path = await ipc.copyPath(idx).catch(() => "");
+    const summary = await ipc.nodeSummary(idx).catch(() => null);
+    const size = summary ? fmtBytes(state.sizeMode === "allocated" ? summary.allocated : summary.logical) : "";
+    if (
+      !confirm(
+        `⚠ PERMANENTLY delete this ${summary?.is_dir ? "folder and everything in it" : "file"}?\n\n` +
+          `${path}\n${size ? `(${size})` : ""}\n\n` +
+          `This bypasses the Recycle Bin. The data CANNOT be recovered.`,
+      )
+    )
+      return;
   }
 
-  const path = await ipc.copyPath(idx).catch(() => "");
-  const summary = await ipc.nodeSummary(idx).catch(() => null);
-  const size = summary ? fmtBytes(state.sizeMode === "allocated" ? summary.allocated : summary.logical) : "";
-  const ok = confirm(
-    `⚠ PERMANENTLY delete this ${summary?.is_dir ? "folder and everything in it" : "file"}?\n\n` +
-      `${path}\n${size ? `(${size})` : ""}\n\n` +
-      `This bypasses the Recycle Bin. The data CANNOT be recovered.`,
-  );
-  if (!ok) return;
+  pushLoading(`Deleting ${idxs.length} item${idxs.length > 1 ? "s" : ""}…`);
   try {
-    await ipc.deletePermanentNodes([idx]);
-    elStatusSummary.textContent = `Permanently deleted ${path}`;
-    if (state.scanRootPath) startScan(state.scanRootPath);
+    const r = await ipc.deletePermanentNodes(idxs);
+    if (r.failed > 0) {
+      // Most common cause: the file is held open by another process (e.g.
+      // OneDrive's own .odl logs, an open document, a running program).
+      elStatusSummary.textContent = `Deleted ${r.deleted} of ${r.requested}`;
+      alert(
+        `Deleted ${r.deleted} of ${r.requested} item(s).\n\n` +
+          `${r.failed} could NOT be deleted — most likely they're in use by ` +
+          `another program (for example OneDrive keeps its own log files open). ` +
+          `Close the program that's using them and try again.`,
+      );
+    } else {
+      elStatusSummary.textContent = `Permanently deleted ${r.deleted} item${r.deleted > 1 ? "s" : ""}`;
+    }
+    state.selectedIdxs.clear();
   } catch (e) {
     alert(`Delete failed: ${(e as Error).message ?? e}`);
+  } finally {
+    popLoading();
+    // Always rescan so the view matches reality (whatever got deleted is gone;
+    // anything that survived still shows).
+    if (state.scanRootPath) startScan(state.scanRootPath);
   }
 }
 

@@ -4,6 +4,24 @@ All notable changes to Treelens are documented here.
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning is [SemVer](https://semver.org/) (0.x while pre-1.0).
 
+## [0.3.4] — 2026-06-13
+
+### Fixed
+- **Permanent delete hung, popped a Windows dialog, and could silently fail.**
+  v0.3.3 ran `IFileOperation` with only `FOF_NOCONFIRMATION`, so the shell still
+  showed its own progress / "file in use" dialog — which misbehaves when called
+  from a worker thread with no message pump (the multi-second hang you saw). And
+  if items were locked (e.g. OneDrive's `.odl` ListSync logs, held open by the
+  running OneDrive process), they were skipped with no feedback, so files
+  "disappeared" from the dialog but remained on disk.
+  Now permanent delete runs fully **headless** (no shell dialogs) and **verifies
+  what actually got removed** by re-checking the paths afterward. The UI reports
+  honestly: "Deleted X of N — Y could not be deleted (in use by another
+  program)", shows a "Deleting…" indicator, and always rescans. Treelens can't
+  force-delete a file another process holds open (close that program and retry).
+
+[0.3.4]: https://github.com/skyflyt/treelens/releases/tag/v0.3.4
+
 ## [0.3.3] — 2026-06-13
 
 ### Added

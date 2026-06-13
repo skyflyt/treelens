@@ -112,6 +112,12 @@ export interface MutationResult {
   rescan_path: string;
 }
 
+export interface DeleteResult {
+  requested: number;
+  deleted: number;
+  failed: number;
+}
+
 export interface ChecksumSet {
   size: number;
   crc32: string;
@@ -217,7 +223,7 @@ export const ipc = {
     return invoke<number>("recycle_nodes", { tab: activeTab, idxs });
   },
   deletePermanentNodes(idxs: number[]) {
-    return invoke<number>("delete_permanent_nodes", { tab: activeTab, idxs });
+    return invoke<DeleteResult>("delete_permanent_nodes", { tab: activeTab, idxs });
   },
   openFile(idx: number) {
     return invoke<void>("open_file", { tab: activeTab, idx });
