@@ -213,6 +213,9 @@ export const ipc = {
       payload: { tab: activeTab, idx },
     });
   },
+  recycleNodes(idxs: number[]) {
+    return invoke<number>("recycle_nodes", { tab: activeTab, idxs });
+  },
   openFile(idx: number) {
     return invoke<void>("open_file", { tab: activeTab, idx });
   },

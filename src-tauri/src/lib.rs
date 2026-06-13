@@ -639,6 +639,24 @@ fn recycle_node(
     })
 }
 
+/// Recycle several nodes at once (multi-select bulk delete). Resolves each idx
+/// to a path and sends them to the Recycle Bin in one shell operation.
+#[tauri::command]
+fn recycle_nodes(
+    tab: u32,
+    idxs: Vec<u32>,
+    state: State<'_, AppState>,
+) -> Result<u32, CommandError> {
+    let mut paths = Vec::with_capacity(idxs.len());
+    for idx in &idxs {
+        paths.push(node_path(state.inner(), tab, *idx)?);
+    }
+    fileops::recycle_many(&paths).map_err(|e| CommandError {
+        message: format!("{e}"),
+    })?;
+    Ok(paths.len() as u32)
+}
+
 #[derive(Debug, Serialize)]
 struct DriveEntry {
     letter: String,
@@ -1126,6 +1144,7 @@ pub fn run() {
             stego_embed,
             save_bytes,
             recycle_node,
+            recycle_nodes,
             list_drives,
             is_elevated,
             relaunch_as_admin,

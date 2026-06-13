@@ -4,6 +4,26 @@ All notable changes to Treelens are documented here.
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning is [SemVer](https://semver.org/) (0.x while pre-1.0).
 
+## [0.3.2] — 2026-06-13
+
+### Fixed
+- **Couldn't navigate back up the tree via the breadcrumb.** Breadcrumb
+  segments called `drillInto`, which guards on "is this idx a directory in the
+  current view" — but ancestors aren't in the current view's set, so the guard
+  silently rejected every up-click. Breadcrumb segments now use a dedicated
+  `navigateToFolder` with no such guard (an ancestor crumb is a directory by
+  definition). Backspace-to-go-up was unaffected; this was breadcrumb-only.
+
+### Added
+- **Multi-select** in the Contents list: **Ctrl-click** toggles individual
+  rows, **Shift-click** selects a range, plain click still single-selects (and
+  still drills into folders). The selection count shows in the status bar.
+- **Bulk recycle**: with several rows selected, **Delete** or right-click →
+  "Move N items to Recycle Bin…" sends them all to the Recycle Bin in one
+  shell operation (new `recycle_nodes` command over `IFileOperation`).
+
+[0.3.2]: https://github.com/skyflyt/treelens/releases/tag/v0.3.2
+
 ## [0.3.1] — 2026-06-13
 
 ### Fixed

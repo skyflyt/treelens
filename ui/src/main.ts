@@ -25,7 +25,9 @@ declare const __APP_VERSION__: string;
 interface UiState {
   scanRoot: number | null;       // arena idx of the scanned root
   currentRoot: number | null;    // currently-displayed (drilled-in) root
-  selectedIdx: number | null;
+  selectedIdx: number | null;    // the "active" (last-clicked) selection
+  selectedIdxs: Set<number>;     // full multi-selection (ctrl/shift-click)
+  selectAnchor: number | null;   // anchor for shift-range selection
   rectNames: Map<number, string>;
   scanRootPath: string;
   totals: { files: number; dirs: number; bytes: number; duration_ms: number } | null;
@@ -41,6 +43,8 @@ const state: UiState = {
   scanRoot: null,
   currentRoot: null,
   selectedIdx: null,
+  selectedIdxs: new Set(),
+  selectAnchor: null,
   rectNames: new Map(),
   scanRootPath: "",
   totals: null,
@@ -515,16 +519,74 @@ function handleScanCancelled() {
 
 // ---------- navigation ----------
 
+/** Single-select `idx` (clears any multi-selection). Used by the treemap,
+ *  keyboard nav, and plain clicks. */
 function selectNode(idx: number) {
   state.selectedIdx = idx;
+  state.selectAnchor = idx;
+  state.selectedIdxs = new Set([idx]);
+  applySelectionClasses();
   treemap.setSelected(idx);
-  // Highlight in dir list if visible.
+  if (document.querySelector("#tab-inspect.active")) refreshInspector();
+}
+
+/** Paint the `.selected` class on whichever rows are in the selection set. */
+function applySelectionClasses() {
   document.querySelectorAll(".list-row").forEach((r) => {
-    r.classList.toggle("selected", Number((r as HTMLElement).dataset.idx) === idx);
+    const i = Number((r as HTMLElement).dataset.idx);
+    r.classList.toggle("selected", state.selectedIdxs.has(i));
   });
-  // Keep the inspector in sync if it's the active side view.
-  if (document.querySelector("#tab-inspect.active")) {
-    refreshInspector();
+}
+
+/** Modifier-aware click selection on a list row.
+ *  - plain  : single-select (caller handles drill for directories)
+ *  - ctrl   : toggle this row in/out of the selection
+ *  - shift  : range-select from the anchor to this row (in flat order) */
+function clickSelect(idx: number, e: MouseEvent) {
+  if (e.shiftKey && state.selectAnchor !== null) {
+    const a = flatRows.findIndex((f) => f.row.idx === state.selectAnchor);
+    const b = flatRows.findIndex((f) => f.row.idx === idx);
+    if (a !== -1 && b !== -1) {
+      const [lo, hi] = a < b ? [a, b] : [b, a];
+      state.selectedIdxs = new Set(flatRows.slice(lo, hi + 1).map((f) => f.row.idx));
+      state.selectedIdx = idx;
+    }
+  } else if (e.ctrlKey || e.metaKey) {
+    if (state.selectedIdxs.has(idx)) state.selectedIdxs.delete(idx);
+    else state.selectedIdxs.add(idx);
+    state.selectedIdx = idx;
+    state.selectAnchor = idx;
+  } else {
+    state.selectedIdx = idx;
+    state.selectAnchor = idx;
+    state.selectedIdxs = new Set([idx]);
+  }
+  applySelectionClasses();
+  treemap.setSelected(state.selectedIdx);
+  if (state.selectedIdxs.size > 1) {
+    elStatusSummary.textContent = `${state.selectedIdxs.size} items selected — Del to recycle, right-click for actions`;
+  }
+  if (document.querySelector("#tab-inspect.active")) refreshInspector();
+}
+
+/** Navigate the view to a folder by idx, no dir-membership guard. Used by the
+ *  breadcrumb, where every segment is by definition an ancestor directory —
+ *  drillInto()'s nameIsDir guard would reject these because ancestors aren't in
+ *  the current view's dirIdxs set. */
+async function navigateToFolder(idx: number) {
+  if (state.currentRoot === idx) return;
+  const seq = ++drillSeq;
+  state.currentRoot = idx;
+  state.selectedIdx = null;
+  state.selectedIdxs.clear();
+  expandedIdxs.clear();
+  pushLoading("Loading…");
+  try {
+    await refreshAll(seq);
+  } catch (e) {
+    if (seq === drillSeq) elStatusSummary.textContent = `Navigate failed: ${(e as Error)?.message ?? e}`;
+  } finally {
+    popLoading();
   }
 }
 
@@ -554,9 +616,12 @@ function selectFlatIndex(i: number) {
   const clamped = Math.max(0, Math.min(flatRows.length - 1, i));
   const row = flatRows[clamped].row;
   state.selectedIdx = row.idx;
+  state.selectAnchor = row.idx;
+  state.selectedIdxs = new Set([row.idx]);
   treemap.setSelected(row.idx);
   scrollFlatIndexIntoView(clamped);
   renderDirWindow(true); // re-render applies .selected from state
+  if (document.querySelector("#tab-inspect.active")) refreshInspector();
 }
 
 function scrollFlatIndexIntoView(i: number) {
@@ -665,6 +730,7 @@ async function drillInto(idx: number) {
   const seq = ++drillSeq;
   state.currentRoot = idx;
   state.selectedIdx = null;
+  state.selectedIdxs.clear();
   expandedIdxs.clear();
   pushLoading(`Loading ${name}…`);
   try {
@@ -692,6 +758,7 @@ async function drillUp() {
   const seq = ++drillSeq;
   state.currentRoot = crumbs[crumbs.length - 2].idx;
   state.selectedIdx = null;
+  state.selectedIdxs.clear();
   expandedIdxs.clear();
   pushLoading("Loading…");
   try {
@@ -754,7 +821,7 @@ async function refreshBreadcrumb(seq: number = drillSeq) {
     b.type = "button";
     b.textContent = c.name || "(root)";
     b.title = c.name;
-    b.addEventListener("click", () => drillInto(c.idx));
+    b.addEventListener("click", () => navigateToFolder(c.idx));
     elBreadcrumb.appendChild(b);
     if (i < crumbs.length - 1) {
       const sep = document.createElement("span");
@@ -893,7 +960,7 @@ function renderRow(row: DirRow, depth: number = 0): HTMLElement {
   el.className =
     "list-row" +
     (row.is_dir ? " dir" : "") +
-    (row.idx === state.selectedIdx ? " selected" : "");
+    (state.selectedIdxs.has(row.idx) ? " selected" : "");
   el.dataset.idx = String(row.idx);
   if (depth > 0) {
     el.style.paddingLeft = `${10 + 16 * depth}px`;
@@ -930,11 +997,16 @@ function renderRow(row: DirRow, depth: number = 0): HTMLElement {
     });
   }
 
-  // Row body: single-click drills into the folder (replaces the view). Files
-  // just select. This matches Skylar's stated expectation that one click on
-  // the row navigates rather than just highlights.
+  // Row body click:
+  //  - with Ctrl/Shift → adjust the multi-selection (no drill), so you can
+  //    pick several files/folders for a bulk action.
+  //  - plain click on a folder → drill in; plain click on a file → select.
   el.addEventListener("click", (e) => {
     e.stopPropagation();
+    if (e.ctrlKey || e.metaKey || e.shiftKey) {
+      clickSelect(row.idx, e);
+      return;
+    }
     if (row.is_dir && !row.is_reparse) {
       drillInto(row.idx);
     } else {
@@ -1053,7 +1125,15 @@ function openCtxMenu(idx: number, x: number, y: number) {
       { label: "Find empty folders", action: () => runSuperSkillEmpty(idx) },
     ] : []),
     { label: "—", action: () => {} },
-    { label: "Move to Recycle Bin…", danger: true, shortcut: "Del", action: () => confirmRecycle(idx) },
+    {
+      label:
+        state.selectedIdxs.size > 1 && state.selectedIdxs.has(idx)
+          ? `Move ${state.selectedIdxs.size} items to Recycle Bin…`
+          : "Move to Recycle Bin…",
+      danger: true,
+      shortcut: "Del",
+      action: () => confirmRecycle(idx),
+    },
   ];
   const menu = elCtxMenu;
   menu.innerHTML = "";
@@ -1118,6 +1198,23 @@ async function promptRename(idx: number) {
 }
 
 async function confirmRecycle(idx: number) {
+  // If the clicked row is part of a multi-selection, recycle the whole set.
+  const multi =
+    state.selectedIdxs.size > 1 && state.selectedIdxs.has(idx)
+      ? [...state.selectedIdxs]
+      : null;
+  if (multi) {
+    if (!confirm(`Move ${multi.length} items to the Recycle Bin?\n\nYou can restore them from Explorer's Recycle Bin.`)) return;
+    try {
+      const n = await ipc.recycleNodes(multi);
+      elStatusSummary.textContent = `Recycled ${n} items`;
+      state.selectedIdxs.clear();
+      if (state.scanRootPath) startScan(state.scanRootPath);
+    } catch (e) {
+      alert(`Recycle failed: ${(e as Error).message ?? e}`);
+    }
+    return;
+  }
   const path = await ipc.copyPath(idx).catch(() => "");
   const summary = await ipc.nodeSummary(idx).catch(() => null);
   const size = summary ? fmtBytes(state.sizeMode === "allocated" ? summary.allocated : summary.logical) : "";
