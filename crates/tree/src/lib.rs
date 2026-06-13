@@ -1,3 +1,9 @@
+// Sort-by-closure is the natural form for these comparators (some need
+// case-insensitive name compare; some are sized for the key fn cost). The
+// "use sort_unstable_by_key" suggestion would either allocate per comparison
+// or obscure intent — allowing per-crate.
+#![allow(clippy::unnecessary_sort_by)]
+
 //! Treelens arena tree, aggregation, queries, and treemap layout.
 //!
 //! The scanner streams [`scanner::Record`] values; this crate builds them into a
@@ -27,10 +33,10 @@ pub struct Node {
     pub logical: u64,
     pub allocated: u64,
     pub mtime: i64,
-    pub file_count: u64,    // for dirs: rolled-up count of files in subtree
-    pub dir_count: u64,     // for dirs: rolled-up count of subdirs
-    pub newest_mtime: i64,  // max mtime in subtree (for age-heat)
-    pub oldest_mtime: i64,  // min mtime in subtree
+    pub file_count: u64,   // for dirs: rolled-up count of files in subtree
+    pub dir_count: u64,    // for dirs: rolled-up count of subdirs
+    pub newest_mtime: i64, // max mtime in subtree (for age-heat)
+    pub oldest_mtime: i64, // min mtime in subtree
     pub flags: u16,
 }
 
@@ -480,12 +486,7 @@ impl Default for LayoutOpts {
 ///
 /// Returns a flat list of rects (one per visible node). Frontend renders the
 /// list directly. Layout is bounded in size by the `min_px` cutoff.
-pub fn treemap_layout(
-    tree: &Tree,
-    root_idx: u32,
-    opts: LayoutOpts,
-    mode: SizeMode,
-) -> Vec<Rect> {
+pub fn treemap_layout(tree: &Tree, root_idx: u32, opts: LayoutOpts, mode: SizeMode) -> Vec<Rect> {
     let mut out: Vec<Rect> = Vec::new();
     let root_size = tree.size_of(root_idx, mode);
     if root_size == 0 {
@@ -574,7 +575,15 @@ fn layout_recurse(
         let mut best_worst = f32::INFINITY;
         for (i, (_, s)) in remaining.iter().enumerate() {
             let candidate_sum = row_sum + *s;
-            let worst = worst_aspect(remaining, i + 1, candidate_sum, short, rect_w, rect_h, remaining_size);
+            let worst = worst_aspect(
+                remaining,
+                i + 1,
+                candidate_sum,
+                short,
+                rect_w,
+                rect_h,
+                remaining_size,
+            );
             if worst < best_worst {
                 best_worst = worst;
                 row_count = i + 1;
@@ -625,19 +634,7 @@ fn layout_recurse(
                     name: node.name.clone(),
                 });
                 if node.is_dir() && depth + 1 < opts.max_depth {
-                    layout_recurse(
-                        tree,
-                        *idx,
-                        ix,
-                        iy,
-                        iw,
-                        ih,
-                        *sz,
-                        mode,
-                        depth + 1,
-                        opts,
-                        out,
-                    );
+                    layout_recurse(tree, *idx, ix, iy, iw, ih, *sz, mode, depth + 1, opts, out);
                 }
             }
             cursor += len;

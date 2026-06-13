@@ -10,16 +10,16 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::System::Com::{
-    CLSCTX_ALL, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance, CoInitializeEx,
-    CoUninitialize,
+    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
+    COINIT_DISABLE_OLE1DDE,
 };
 use windows::Win32::UI::Shell::{
-    FILEOPERATION_FLAGS, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_WANTNUKEWARNING,
-    FOFX_ADDUNDORECORD, FOFX_RECYCLEONDELETE, FileOperation, IFileOperation, IShellItem,
-    SHCreateItemFromParsingName,
+    FileOperation, IFileOperation, IShellItem, SHCreateItemFromParsingName, FILEOPERATION_FLAGS,
+    FOFX_ADDUNDORECORD, FOFX_RECYCLEONDELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION,
+    FOF_WANTNUKEWARNING,
 };
-use windows::core::{HSTRING, PCWSTR};
 
 #[derive(Debug, thiserror::Error)]
 pub enum FileOpError {
@@ -68,7 +68,9 @@ fn to_wide(s: &str) -> Vec<u16> {
 }
 
 fn shell_item_for(path: &Path) -> Result<IShellItem> {
-    let abs = path.canonicalize().or_else(|_| Ok::<_, std::io::Error>(path.to_path_buf()))?;
+    let abs = path
+        .canonicalize()
+        .or_else(|_| Ok::<_, std::io::Error>(path.to_path_buf()))?;
     let s = abs.to_string_lossy().to_string();
     // Strip the Windows \\?\ verbatim prefix; SHCreateItemFromParsingName dislikes it.
     let s = s.strip_prefix(r"\\?\").map(|x| x.to_string()).unwrap_or(s);
@@ -93,11 +95,11 @@ pub fn recycle(path: impl AsRef<Path>) -> Result<()> {
 
 fn recycle_flags() -> FILEOPERATION_FLAGS {
     FILEOPERATION_FLAGS(
-        FOF_ALLOWUNDO.0 as u32
-            | FOF_NOCONFIRMATION.0 as u32
-            | FOF_WANTNUKEWARNING.0 as u32
-            | FOFX_ADDUNDORECORD.0 as u32
-            | FOFX_RECYCLEONDELETE.0 as u32,
+        FOF_ALLOWUNDO.0
+            | FOF_NOCONFIRMATION.0
+            | FOF_WANTNUKEWARNING.0
+            | FOFX_ADDUNDORECORD.0
+            | FOFX_RECYCLEONDELETE.0,
     )
 }
 
@@ -132,7 +134,9 @@ pub fn open_in_explorer(path: impl AsRef<Path>) -> Result<()> {
     unsafe {
         let pidl = ILCreateFromPathW(PCWSTR(w.as_ptr()));
         if pidl.is_null() {
-            return Err(FileOpError::Failed("ILCreateFromPathW returned null".into()));
+            return Err(FileOpError::Failed(
+                "ILCreateFromPathW returned null".into(),
+            ));
         }
         let res = SHOpenFolderAndSelectItems(pidl, None, 0);
         ILFree(Some(pidl));
@@ -147,12 +151,17 @@ pub fn open_in_terminal(dir: impl AsRef<Path>) -> Result<()> {
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     let p = dir.as_ref();
     let p = if p.is_file() {
-        p.parent().map(|x| x.to_path_buf()).unwrap_or_else(|| p.to_path_buf())
+        p.parent()
+            .map(|x| x.to_path_buf())
+            .unwrap_or_else(|| p.to_path_buf())
     } else {
         p.to_path_buf()
     };
     let dir_str = p.to_string_lossy().to_string();
-    let dir_str = dir_str.strip_prefix(r"\\?\").map(|x| x.to_string()).unwrap_or(dir_str);
+    let dir_str = dir_str
+        .strip_prefix(r"\\?\")
+        .map(|x| x.to_string())
+        .unwrap_or(dir_str);
     let dir_w = to_wide(&dir_str);
     // Try Windows Terminal first.
     let wt_cmd_w = to_wide("wt.exe");
@@ -194,7 +203,9 @@ pub fn open_in_terminal(dir: impl AsRef<Path>) -> Result<()> {
 /// Check whether the current process is running elevated (admin).
 pub fn is_elevated() -> bool {
     use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     unsafe {
@@ -222,8 +233,8 @@ pub fn is_elevated() -> bool {
 pub fn relaunch_as_admin() -> Result<()> {
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-    let exe = std::env::current_exe()
-        .map_err(|e| FileOpError::Failed(format!("current_exe: {e}")))?;
+    let exe =
+        std::env::current_exe().map_err(|e| FileOpError::Failed(format!("current_exe: {e}")))?;
     let exe_str = exe.to_string_lossy().to_string();
     let exe_w = to_wide(&exe_str);
     let runas_w = to_wide("runas");
@@ -237,7 +248,9 @@ pub fn relaunch_as_admin() -> Result<()> {
             SW_SHOWNORMAL,
         );
         if (h.0 as isize) <= 32 {
-            return Err(FileOpError::Failed("user declined UAC or runas failed".into()));
+            return Err(FileOpError::Failed(
+                "user declined UAC or runas failed".into(),
+            ));
         }
     }
     Ok(())
@@ -305,7 +318,7 @@ pub fn find_old_files(
             }
         }
     }
-    out.sort_unstable_by(|a, b| b.size.cmp(&a.size));
+    out.sort_unstable_by_key(|f| std::cmp::Reverse(f.size));
     Ok(out)
 }
 

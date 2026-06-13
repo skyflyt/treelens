@@ -74,8 +74,7 @@ async fn scan_start(
     let opts = ScanOptions::new(root.clone());
 
     // Channel sizes: records can be high-volume; events are sparse.
-    let (rec_rx, evt_rx, handle) =
-        scanner::spawn(opts, cancel.clone(), 8192, 32);
+    let (rec_rx, evt_rx, handle) = scanner::spawn(opts, cancel.clone(), 8192, 32);
 
     *state.scan.lock() = Some(ScanState {
         cancel: cancel.clone(),
@@ -120,8 +119,8 @@ fn collect_scan(
                 Ok(rec) => records.push(rec),
                 Err(_) => break, // record sender dropped
             },
-            recv(evt_rx) -> e => match e {
-                Ok(ev) => match ev {
+            recv(evt_rx) -> e => if let Ok(ev) = e {
+                match ev {
                     ScanEvent::Progress(p) => {
                         let payload = ScanProgressPayload {
                             files: p.files_seen,
@@ -135,8 +134,7 @@ fn collect_scan(
                     }
                     ScanEvent::Cancelled => { cancelled = true; }
                     ScanEvent::Done { duration_ms: d } => { duration_ms = d; }
-                },
-                Err(_) => {} // event sender dropped — keep draining records
+                }
             }
         }
     }
@@ -233,7 +231,12 @@ fn treemap_layout(
         max_depth,
         padding: 1.0,
     };
-    Ok(tree::treemap_layout(tree, root, opts, parse_mode(&size_mode)))
+    Ok(tree::treemap_layout(
+        tree,
+        root,
+        opts,
+        parse_mode(&size_mode),
+    ))
 }
 
 #[derive(Debug, Serialize)]
@@ -267,10 +270,7 @@ struct BreadcrumbEntry {
 }
 
 #[tauri::command]
-fn breadcrumb(
-    idx: u32,
-    state: State<'_, AppState>,
-) -> Result<Vec<BreadcrumbEntry>, CommandError> {
+fn breadcrumb(idx: u32, state: State<'_, AppState>) -> Result<Vec<BreadcrumbEntry>, CommandError> {
     let tree_guard = state.tree.lock();
     let tree = tree_guard.as_ref().ok_or_else(|| CommandError {
         message: "no scan loaded".into(),
@@ -299,10 +299,7 @@ struct NodeSummary {
 }
 
 #[tauri::command]
-fn node_summary(
-    idx: u32,
-    state: State<'_, AppState>,
-) -> Result<NodeSummary, CommandError> {
+fn node_summary(idx: u32, state: State<'_, AppState>) -> Result<NodeSummary, CommandError> {
     let tree_guard = state.tree.lock();
     let tree = tree_guard.as_ref().ok_or_else(|| CommandError {
         message: "no scan loaded".into(),
@@ -330,13 +327,9 @@ fn node_path(state: &AppStateInner, idx: u32) -> Result<PathBuf, CommandError> {
     let tree = tree_guard.as_ref().ok_or_else(|| CommandError {
         message: "no scan loaded".into(),
     })?;
-    let scan_path = state
-        .scan_path
-        .lock()
-        .clone()
-        .ok_or_else(|| CommandError {
-            message: "no scan path".into(),
-        })?;
+    let scan_path = state.scan_path.lock().clone().ok_or_else(|| CommandError {
+        message: "no scan path".into(),
+    })?;
     let mut segments: Vec<String> = tree.path(idx).into_iter().map(|(_, n)| n).collect();
     // The first segment is the root node's recorded name; we drop it and join the rest
     // onto the actual scan root (handles things like "C:\" vs name="C:").
@@ -387,7 +380,10 @@ struct RecycleResult {
 }
 
 #[tauri::command]
-fn recycle_node(payload: RecyclePayload, state: State<'_, AppState>) -> Result<RecycleResult, CommandError> {
+fn recycle_node(
+    payload: RecyclePayload,
+    state: State<'_, AppState>,
+) -> Result<RecycleResult, CommandError> {
     let path = node_path(state.inner(), payload.idx)?;
     fileops::recycle(&path).map_err(|e| CommandError {
         message: format!("{e}"),
@@ -417,10 +413,10 @@ fn list_drives() -> Result<Vec<DriveEntry>, CommandError> {
 
 #[cfg(windows)]
 fn list_windows_drives() -> anyhow::Result<Vec<DriveEntry>> {
+    use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::{
         GetDiskFreeSpaceExW, GetLogicalDrives, GetVolumeInformationW,
     };
-    use windows::core::PCWSTR;
 
     let mask = unsafe { GetLogicalDrives() };
     let mut out: Vec<DriveEntry> = Vec::new();
@@ -434,8 +430,13 @@ fn list_windows_drives() -> anyhow::Result<Vec<DriveEntry>> {
         let mut total = 0u64;
         let mut free = 0u64;
         let ok = unsafe {
-            GetDiskFreeSpaceExW(PCWSTR(wroot.as_ptr()), None, Some(&mut total), Some(&mut free))
-                .is_ok()
+            GetDiskFreeSpaceExW(
+                PCWSTR(wroot.as_ptr()),
+                None,
+                Some(&mut total),
+                Some(&mut free),
+            )
+            .is_ok()
         };
         if !ok {
             continue;
@@ -460,7 +461,11 @@ fn list_windows_drives() -> anyhow::Result<Vec<DriveEntry>> {
         let label = if label_ok {
             let len = label_buf.iter().position(|&c| c == 0).unwrap_or(0);
             let s = String::from_utf16_lossy(&label_buf[..len]);
-            if s.is_empty() { None } else { Some(s) }
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
         } else {
             None
         };

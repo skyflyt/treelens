@@ -10,13 +10,13 @@
 //!
 //! Cancellation is cooperative via [`Cancel`]; checked once per directory.
 
-use crossbeam_channel::{Receiver, Sender, bounded};
+use crossbeam_channel::{bounded, Receiver, Sender};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -143,7 +143,13 @@ pub fn scan(
     let root_flags = FLAG_DIR
         | root_meta
             .as_ref()
-            .map(|m| if m.file_type().is_symlink() { FLAG_REPARSE } else { 0 })
+            .map(|m| {
+                if m.file_type().is_symlink() {
+                    FLAG_REPARSE
+                } else {
+                    0
+                }
+            })
             .unwrap_or(0);
     let _ = record_tx.send(Record {
         name: root_name,
@@ -359,7 +365,11 @@ fn worker(
 
 #[inline]
 fn align_up(n: u64, align: u64) -> u64 {
-    if align == 0 { n } else { (n + align - 1) & !(align - 1) }
+    if align == 0 {
+        n
+    } else {
+        (n + align - 1) & !(align - 1)
+    }
 }
 
 /// Convenience: spawn a scan on a background thread and return channels.
@@ -372,7 +382,11 @@ pub fn spawn(
     cancel: Cancel,
     record_buf: usize,
     event_buf: usize,
-) -> (Receiver<Record>, Receiver<ScanEvent>, thread::JoinHandle<()>) {
+) -> (
+    Receiver<Record>,
+    Receiver<ScanEvent>,
+    thread::JoinHandle<()>,
+) {
     let (rec_tx, rec_rx) = bounded::<Record>(record_buf);
     let (evt_tx, evt_rx) = bounded::<ScanEvent>(event_buf);
     let handle = thread::spawn(move || {
