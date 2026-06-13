@@ -46,7 +46,7 @@ First public release. The MUST-tier feature set from `PLAN.md §4` is in.
 - Self-designed SVG icon → multi-resolution `.ico` (sizes 16/32/48/64/128/256).
 
 ### Known v0.1 limitations
-- **No MFT fast path yet.** Scans use the parallel walk; the WizTree-class
+- **No MFT fast path yet.** Scans use the parallel walk; the MFT-native
   ~5 s / 5M-file MFT path is v0.2.
 - **Allocated size** is computed as logical size cluster-aligned to 4 KB —
   accurate to within a cluster for typical files, but not for compressed,

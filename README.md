@@ -4,7 +4,7 @@
 
 > ![Treelens v0.1](assets/screenshot-scanned.png)
 >
-> The spiritual successor to TreeSize Free — fast scan, modern treemap, dark/light theming, recycle-bin delete, MIT-licensed, no telemetry, no installer required.
+> A fast, modern, open-source disk-space visualizer — parallel scan, squarified treemap, dark/light theming, recycle-bin delete, MIT-licensed, no telemetry, no installer required.
 
 ## Download
 
@@ -33,13 +33,9 @@ Grab the latest portable EXE from [Releases](https://github.com/skyflyt/treelens
 
 ## Why
 
-TreeSize Free answered _"what is eating my disk?"_ for years — then it went behind a paywall. The free alternatives each miss:
+Finding what's eating your disk on Windows used to be a one-click answer with simple desktop tools. The free options have aged unevenly — single-threaded scanners that take twenty minutes on modern NVMe, closed-source binaries with restrictive personal-use-only licenses, abandoned projects, and tools that limit what they'll show you without an upgrade.
 
-- **WinDirStat** has the beloved treemap, but a 2003-era single-threaded scanner.
-- **WizTree** is blazing fast (reads the NTFS MFT directly), but closed-source, free-for-personal-use-only, and the UI is functional rather than pleasant.
-- Most other tools (SpaceSniffer, SequoiaView) are abandoned.
-
-Treelens aims to be all three at once: fast like WizTree, visual like WinDirStat, organized like TreeSize, free forever, open source.
+Treelens is the answer I wanted: a parallel scanner, a visual treemap, a familiar columnar drill-down, free forever, open source, MIT, no installer required.
 
 ## Roadmap
 

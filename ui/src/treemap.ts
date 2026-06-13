@@ -117,7 +117,7 @@ export class Treemap {
       ctx.fillStyle = base;
       ctx.fillRect(r.x, r.y, r.w, r.h);
 
-      // Faint cushion-style inner shadow for the WinDirStat depth cue, but cheap:
+      // Faint cushion-style inner shadow for the classic treemap depth cue, but cheap:
       // a single linear gradient across the rect rather than per-pixel cushion math.
       if (!r.is_dir && r.w > 4 && r.h > 4) {
         const g = ctx.createLinearGradient(r.x, r.y, r.x, r.y + r.h);

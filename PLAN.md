@@ -5,7 +5,7 @@
 > at the bottom.
 >
 > **One-liner:** A free, open-source, portable Windows disk-space visualizer — the spiritual
-> successor to TreeSize Free, with WizTree-class scan speed and a modern treemap UI.
+> successor to commercial disk-space tools, with MFT-native scan speed and a modern treemap UI.
 
 ---
 
@@ -29,17 +29,17 @@
 
 ### The problem
 
-Skylar used TreeSize Free to answer the eternal question — *"what is eating my disk?"* — and
+Skylar used the canonical desktop disk-space tools to answer the eternal question — *"what is eating my disk?"* — and
 JAM Software moved it behind a paywall. The remaining free options each miss:
 
-- **WinDirStat** — beloved treemap, but single-threaded scanning from 2003. A full scan of a
+- **Older treemap tools** — beloved visualizations, but single-threaded scanners from the early 2000s. A full scan of a
   modern multi-terabyte volume takes many minutes, and the UI is dated Win32.
-- **WizTree** — astonishingly fast (reads the NTFS MFT directly), but closed-source, free
+- **Closed-source MFT readers** — astonishingly fast (read the NTFS MFT directly), but closed-source, free
   only for personal use, and the UI is functional rather than pleasant.
-- **SpaceSniffer / SequoiaView / etc.** — abandoned or near-abandoned.
+- **Several other community tools** — abandoned or near-abandoned.
 
-There is a genuinely open hole in the market: **fast like WizTree, visual like WinDirStat,
-organized like TreeSize, free forever, open source.**
+There is a genuinely open hole in the market: **fast as the MFT-readers, visual as the treemap classics,
+organized like the columnar list-first tools, free forever, open source.**
 
 ### Goals
 
@@ -49,7 +49,7 @@ organized like TreeSize, free forever, open source.**
    file-association convenience, but it is secondary.
 2. **Full file-system access.** The app runs elevated (admin) so it can see everything:
    `System Volume Information`, other users' profiles, ACL-restricted corners, and — the
-   real prize — the raw NTFS MFT, which is what makes WizTree-speed scans possible.
+   real prize — the raw NTFS MFT, which is what makes single-digit-second scans of multi-million-file volumes possible.
 3. **Full-featured but simple.** Treemap + directory list + top-N panel. Drill in, find the
    pig, open it in Explorer or recycle it. No 40-tab options dialog.
 4. **Visual, clean, modern, snappy.** 60 fps treemap interaction, sub-second app launch,
@@ -199,7 +199,7 @@ flowchart TD
     F -. "progress events\nevery ~100 ms" .-> UI[Frontend]
 ```
 
-**Path 1 — MFT fast path (the WizTree trick).** When the target is the root of an NTFS
+**Path 1 — MFT fast path (the direct-MFT trick).** When the target is the root of an NTFS
 volume and we're elevated, skip the directory tree entirely: enumerate every file record on
 the volume via `DeviceIoControl(FSCTL_ENUM_USN_DATA)` (or by opening `\\.\C:` and parsing
 the `$MFT` directly — implementation chooses whichever proves more robust; `FSCTL_ENUM_USN_DATA`
@@ -207,7 +207,7 @@ is the documented API and the first thing to try). Each record gives us file ref
 number, *parent* reference number, name, and attributes; sizes come from the
 `$STANDARD_INFORMATION`/USN data or a follow-up stat pass. We get millions of records as a
 flat stream at near-sequential-read speed, then stitch the tree together in memory by FRN →
-parent-FRN. This is why WizTree scans a 2M-file volume in ~5 seconds while WinDirStat takes
+parent-FRN. This is why MFT-direct scanners can handle a 2M-file volume in ~5 seconds while recursive walkers take
 5 minutes — and **it is the concrete payoff of the run-as-admin requirement.**
 
 **Path 2 — parallel walk fallback.** For subdirectory scans, non-NTFS volumes (exFAT USB
@@ -286,7 +286,7 @@ Node (target ≤ 48 bytes, packed):
 
 ### 3.4 UI + visualizations
 
-**Primary: squarified treemap. Secondary: columnar directory list (TreeSize-style).
+**Primary: squarified treemap. Secondary: columnar directory list (classic list-first style).
 They are siblings in one window, not modes.**
 
 Layout (default, resizable splits):
@@ -312,7 +312,7 @@ Layout (default, resizable splits):
 - **Treemap:** squarified algorithm (Bruls/Huizing/van Wijk), rendered to a single
   `<canvas>` (2D context first; WebGL only if profiling demands it). Visual style:
   flat-modern with per-rect radial gradient that *reads* like cushion shading — the classic
-  WinDirStat depth cue without the per-pixel cushion math. Color = file-type hue for file
+  classic treemap depth cue without the per-pixel cushion math. Color = file-type hue for file
   rects, neutral ramp by depth for directory borders. Hover → highlight + tooltip
   (name, size, % of parent, path). Click → select (syncs the directory list). Double-click
   → drill into that directory (animated zoom ~150 ms). Right-click → context menu (open in
@@ -326,7 +326,7 @@ Layout (default, resizable splits):
 - **Directory list:** virtualized table (windowed rendering, only ~40 DOM rows alive),
   columns: name, size, % bar inline, files count, modified. Click column to sort (sort
   happens in Rust, frontend re-pages). Expand-in-place (▸) *and* double-click-to-navigate;
-  keeps TreeSize muscle memory intact.
+  keeps the classic list-first muscle memory intact.
 - **Top-N panel:** top 50 files (and a tab for top 50 directories) under the current root,
   precomputed at scan end, re-filtered on drill-in.
 - **Breadcrumb:** path segments are buttons; also accepts typed/pasted paths.
@@ -478,7 +478,7 @@ NVMe SSD, 16 GB RAM, Windows 11.
 
 | Metric | Target | Stretch | Notes |
 |---|---|---|---|
-| **MFT scan**, 1 TB NVMe volume, ~5M files | **< 15 s** end-to-end (enumerate + build tree + aggregate) | < 8 s | WizTree does ~5M in single-digit seconds; we accept a small honesty tax for tree-building rigor |
+| **MFT scan**, 1 TB NVMe volume, ~5M files | **< 15 s** end-to-end (enumerate + build tree + aggregate) | < 8 s | MFT-direct readers can hit single-digit seconds on ~5M; we accept a small honesty tax for tree-building rigor |
 | **Walk scan** (fallback), same volume, warm metadata cache | < 90 s | < 45 s | Latency-bound; large-buffer enumeration + 16–32 way parallelism |
 | Walk scan, 100k-file project folder | < 2 s | < 1 s | The "scan just this directory" common case |
 | App cold start → interactive window | < 1.5 s | < 800 ms | WebView2 init dominates; keep frontend bundle < 500 KB |
@@ -599,14 +599,14 @@ existing disk tool, not embarrassing in a portfolio, leaves room for an icon.
 
 | Candidate | For | Against |
 |---|---|---|
-| **Treelens** ✅ | "Tree" (file tree, TreeSize lineage) + "lens" (look closely, visualize). Reads as one calm word, great lowercase (`treelens.exe`), obvious icon (magnifier over treemap), no major tool owns it | Minor obscure-project name collisions on GitHub (unavoidable for any good name) |
+| **Treelens** ✅ | "Tree" (file tree, classic disk-space lineage) + "lens" (look closely, visualize). Reads as one calm word, great lowercase (`treelens.exe`), obvious icon (magnifier over treemap), no major tool owns it | Minor obscure-project name collisions on GitHub (unavoidable for any good name) |
 | DiskMap | Dead-obvious descriptor | Generic to the point of unsearchable; multiple existing utilities already use it |
 | Cartographer | Evocative — "maps your disk" | Doesn't say *disk* at all; long; pretentious for a utility |
 | TreeSpy | Short, treemap heritage | "Spy" reads vaguely malware-ish for a tool that demands admin rights — wrong vibe for the UAC prompt |
 | GirthVue | Genuinely funny | The joke is in the UAC prompt forever; also implies Vue.js, which we're not using |
 
 **Picked: Treelens** (`skyflyt/treelens`, binary `treelens.exe`, display name "Treelens").
-It honors the TreeSize lineage Skylar is replacing, describes the product (a lens on your
+It honors the disk-space-visualizer lineage, describes the product (a lens on your
 file tree), and survives being said in a meeting.
 
 ---
@@ -648,14 +648,14 @@ what happens if you just say "run with it."
    *(Default: Treelens. Repo is being created under this name now; trivial to rename
    before any code lands.)*
 3. **Visualization priority:** plan assumes **treemap-first** with the columnar list as a
-   permanent side panel (§3.4). If your TreeSize habit was actually list-first/treemap-
+   permanent side panel (§3.4). If your habit from previous tools was actually list-first/treemap-
    second, say so — it reorders milestones 4 and 5 and changes the default layout.
    *(Default: treemap-first.)*
 4. **Destructive ops in v1:** plan says recycle-bin delete **only** (undo-able), no
    permanent delete, no move/rename. Comfortable, or should v1 be strictly read-only with
    delete arriving in v1.1? *(Default: recycle-bin delete in v1, with confirmation.)*
-5. **TreeSize/WinDirStat muscle memory:** anything from the old tools you *loved* and would
-   miss — e.g. TreeSize's per-folder expand-with-percent-bars in place, WinDirStat's
+5. **Muscle memory from older tools:** anything you *loved* in previous disk-space tools and would
+   miss — e.g. per-folder expand-with-percent-bars in place, the cushion-shaded treemap
    extension legend, "older than X" age filters? List them and they get tiered into §4.
 6. **Elevation strictness:** plan says manifest `requireAdministrator` — the exe *always*
    prompts and won't run without admin (§5). Alternative is run-degraded-without-admin
