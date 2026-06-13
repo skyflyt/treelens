@@ -51,3 +51,6 @@ Desktop.ini
 # --- Local app config produced by running a dev build in-tree ---
 treelens.config.json
 *.log
+
+# --- Local agent scratch ---
+scratch-*
