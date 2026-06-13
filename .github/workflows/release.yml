@@ -56,18 +56,38 @@ jobs:
           $version = "${{ github.ref_name }}".TrimStart("v")
           $stage = "release-stage"
           New-Item -ItemType Directory -Force $stage | Out-Null
-          # Portable EXE (the raw built binary, before NSIS wrapping).
-          $portableSrc = "src-tauri\target\release\treelens.exe"
+
+          # The Cargo workspace puts target/ at the workspace root, not under src-tauri/.
+          # Find the binary and the NSIS bundle from either layout.
+          $exeCandidates = @(
+            "target\release\treelens.exe",
+            "src-tauri\target\release\treelens.exe"
+          )
+          $portableSrc = $exeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $portableSrc) {
+            Write-Host "::error::treelens.exe not found. Search:"
+            Get-ChildItem -Recurse -Filter "treelens.exe" -ErrorAction SilentlyContinue | Select-Object FullName
+            throw "treelens.exe missing"
+          }
           $portableDst = "$stage\Treelens-$version-portable.exe"
           Copy-Item $portableSrc $portableDst
-          # NSIS installer.
-          $nsisDir = "src-tauri\target\release\bundle\nsis"
-          if (Test-Path $nsisDir) {
+          Write-Host "Portable: $portableSrc -> $portableDst"
+
+          $nsisCandidates = @(
+            "target\release\bundle\nsis",
+            "src-tauri\target\release\bundle\nsis"
+          )
+          $nsisDir = $nsisCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if ($nsisDir) {
             Get-ChildItem $nsisDir -Filter "*.exe" | ForEach-Object {
               Copy-Item $_.FullName "$stage\Treelens-$version-setup.exe"
+              Write-Host "NSIS: $($_.FullName) -> Treelens-$version-setup.exe"
             }
+          } else {
+            Write-Host "::warning::NSIS bundle directory not found; release will ship portable EXE only."
           }
-          # Checksums
+
+          # Checksums for every staged file.
           Get-ChildItem $stage -File | ForEach-Object {
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
             "$hash  $($_.Name)"
