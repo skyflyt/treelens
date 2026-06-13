@@ -1,0 +1,21 @@
+{
+  "name": "treelens",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Free, open-source disk-space visualizer for Windows.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit -p ui/tsconfig.json && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p ui/tsconfig.json"
+  },
+  "devDependencies": {
+    "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/cli": "^2.1.0",
+    "@tauri-apps/plugin-dialog": "^2.0.1",
+    "@tauri-apps/plugin-opener": "^2.0.0",
+    "typescript": "~5.6.3",
+    "vite": "^5.4.10"
+  }
+}
