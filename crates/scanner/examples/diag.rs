@@ -27,17 +27,12 @@ fn main() {
                 Ok(rec) => records.push(rec),
                 Err(_) => break,
             },
-            recv(evt_rx) -> e => if let Ok(ev) = e {
-                match ev {
-                    ScanEvent::Progress(p) => {
-                        if p.elapsed_ms % 2000 < 100 {
-                            eprintln!(
-                                "progress: {} files, {} bytes, {} dirs, {} errors, {}ms",
-                                p.files_seen, p.bytes_seen, p.dirs_seen, p.errors, p.elapsed_ms
-                            );
-                        }
-                    }
-                    _ => {}
+            recv(evt_rx) -> e => if let Ok(ScanEvent::Progress(p)) = e {
+                if p.elapsed_ms % 2000 < 100 {
+                    eprintln!(
+                        "progress: {} files, {} bytes, {} dirs, {} errors, {}ms",
+                        p.files_seen, p.bytes_seen, p.dirs_seen, p.errors, p.elapsed_ms
+                    );
                 }
             }
         }
@@ -48,10 +43,7 @@ fn main() {
 
     let total_logical: u64 = records.iter().map(|r| r.logical).sum();
     let total_allocated: u64 = records.iter().map(|r| r.allocated).sum();
-    let dir_count = records
-        .iter()
-        .filter(|r| r.flags & FLAG_DIR != 0)
-        .count();
+    let dir_count = records.iter().filter(|r| r.flags & FLAG_DIR != 0).count();
     let file_count = records
         .iter()
         .filter(|r| r.flags & FLAG_DIR == 0 && r.flags & FLAG_REPARSE == 0)
@@ -66,16 +58,32 @@ fn main() {
     println!("dirs        : {}", dir_count);
     println!("files       : {}", file_count);
     println!("reparse pts : {}", reparse_count);
-    println!("total logical:  {} ({:.2} GiB)", total_logical, total_logical as f64 / 1024.0 / 1024.0 / 1024.0);
-    println!("total alloc.  : {} ({:.2} GiB)", total_allocated, total_allocated as f64 / 1024.0 / 1024.0 / 1024.0);
+    println!(
+        "total logical:  {} ({:.2} GiB)",
+        total_logical,
+        total_logical as f64 / 1024.0 / 1024.0 / 1024.0
+    );
+    println!(
+        "total alloc.  : {} ({:.2} GiB)",
+        total_allocated,
+        total_allocated as f64 / 1024.0 / 1024.0 / 1024.0
+    );
 
     let tree = tree::Tree::build(records);
 
     println!("\n---- root (rolled-up) ----");
     let root = &tree.nodes[0];
     println!("name        : {}", root.name);
-    println!("logical     : {} ({:.2} GiB)", root.logical, root.logical as f64 / 1024.0 / 1024.0 / 1024.0);
-    println!("allocated   : {} ({:.2} GiB)", root.allocated, root.allocated as f64 / 1024.0 / 1024.0 / 1024.0);
+    println!(
+        "logical     : {} ({:.2} GiB)",
+        root.logical,
+        root.logical as f64 / 1024.0 / 1024.0 / 1024.0
+    );
+    println!(
+        "allocated   : {} ({:.2} GiB)",
+        root.allocated,
+        root.allocated as f64 / 1024.0 / 1024.0 / 1024.0
+    );
     println!("file_count  : {}", root.file_count);
     println!("dir_count   : {}", root.dir_count);
 
@@ -105,7 +113,14 @@ fn main() {
     }
 
     println!("\n---- direct children of root (Contents view) ----");
-    let kids = tree::list_dir(&tree, 0, tree::SortKey::SizeDesc, 0, 50, tree::SizeMode::Allocated);
+    let kids = tree::list_dir(
+        &tree,
+        0,
+        tree::SortKey::SizeDesc,
+        0,
+        50,
+        tree::SizeMode::Allocated,
+    );
     for r in &kids {
         println!(
             "{:>10}  {:>6}  {:>7}  is_dir={}  is_reparse={}  {}",
