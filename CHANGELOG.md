@@ -4,6 +4,31 @@ All notable changes to Treelens are documented here.
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning is [SemVer](https://semver.org/) (0.x while pre-1.0).
 
+## [0.1.2] — 2026-06-13
+
+### Fixed
+- **Folder rows in the side panel didn't drill in.** Single-clicking a row only
+  highlighted it; the only way to navigate down was a double-click that wasn't
+  discoverable from the affordance. Now a single click on a folder row drills
+  into that folder (replaces the view, updates the breadcrumb, reframes the
+  treemap), matching what the `▶` chevron + cursor:pointer promised.
+- **The chevron itself was decorative.** It had no click handler at all.
+  Wired it: the chevron toggles **inline expansion** without leaving the
+  current view — children of the expanded folder appear indented beneath it,
+  TreeSize-style. `▶` rotates to `▼` when open. The chevron is now a real
+  click target with its own hover affordance, separate from the row body.
+
+### Behavior
+- **Two distinct interactions on one row, by design.**
+  - Click the **chevron** → toggle inline expand (stay where you are).
+  - Click the **row body** → drill into the folder (replace the view).
+  - Double-click → drill (kept for muscle memory); on files, opens Explorer.
+- Backspace still drills up; the breadcrumb segments are still buttons; the
+  treemap reframes on drill in either direction. The expanded set resets on
+  drill so you don't carry stale idxs from a different parent.
+
+[0.1.2]: https://github.com/skyflyt/treelens/releases/tag/v0.1.2
+
 ## [0.1.1] — 2026-06-12
 
 Hotfix for three real bugs found scanning a 396 GB / 1.5 M-file Windows home directory.

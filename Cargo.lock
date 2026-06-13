@@ -982,7 +982,7 @@ dependencies = [
 
 [[package]]
 name = "fileops"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "serde",
@@ -2875,7 +2875,7 @@ dependencies = [
 
 [[package]]
 name = "scanner"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -4058,7 +4058,7 @@ dependencies = [
 
 [[package]]
 name = "tree"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "parking_lot",
@@ -4068,7 +4068,7 @@ dependencies = [
 
 [[package]]
 name = "treelens"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "crossbeam-channel",

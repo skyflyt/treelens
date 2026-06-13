@@ -276,6 +276,7 @@ async function drillInto(idx: number) {
   if (!nameIsDir(idx)) return;
   state.currentRoot = idx;
   state.selectedIdx = null;
+  expandedIdxs.clear();
   await refreshAll();
   const summary = await ipc.nodeSummary(idx).catch(() => null);
   elStatusSummary.textContent = summary
@@ -290,6 +291,7 @@ async function drillUp() {
   if (crumbs.length < 2) return;
   state.currentRoot = crumbs[crumbs.length - 2].idx;
   state.selectedIdx = null;
+  expandedIdxs.clear();
   await refreshAll();
 }
 
@@ -298,6 +300,17 @@ async function drillUp() {
 const dirIdxs = new Set<number>();
 function nameIsDir(idx: number): boolean {
   return dirIdxs.has(idx);
+}
+
+// Idxs the user has expanded inline (chevron-click). Reset on drill-in/-out
+// because the new view is rooted somewhere else and these idxs would refer to
+// nodes that aren't currently visible.
+const expandedIdxs = new Set<number>();
+
+async function toggleExpand(idx: number) {
+  if (expandedIdxs.has(idx)) expandedIdxs.delete(idx);
+  else expandedIdxs.add(idx);
+  await refreshDirList();
 }
 
 // ---------- refresh ----------
@@ -365,16 +378,27 @@ async function refreshTreemap() {
 
 async function refreshDirList() {
   if (state.currentRoot === null) return;
-  const rows = await ipc.listDir(state.currentRoot, state.sort, 0, 1000, state.sizeMode);
-  for (const r of rows) {
-    state.rectNames.set(r.idx, r.name);
-    if (r.is_dir) dirIdxs.add(r.idx);
-  }
-  elDirList.innerHTML = "";
-  // For ultra-large lists we'd virtualize; v0.1 caps render at 1000 rows.
+  const saved = elDirList.scrollTop;
   const frag = document.createDocumentFragment();
-  for (const row of rows) frag.appendChild(renderRow(row));
+  await renderListLevel(state.currentRoot, 0, frag);
+  elDirList.innerHTML = "";
   elDirList.appendChild(frag);
+  elDirList.scrollTop = saved;
+}
+
+/** Recursively render one parent's children at the given depth, descending into
+ *  any expanded directories (chevron-toggle). Each row gets a left-indent of
+ *  16px per level so the hierarchy reads at a glance. */
+async function renderListLevel(parent: number, depth: number, frag: DocumentFragment) {
+  const rows = await ipc.listDir(parent, state.sort, 0, 1000, state.sizeMode);
+  for (const row of rows) {
+    if (row.is_dir) dirIdxs.add(row.idx);
+    state.rectNames.set(row.idx, row.name);
+    frag.appendChild(renderRow(row, depth));
+    if (expandedIdxs.has(row.idx) && row.is_dir && !row.is_reparse) {
+      await renderListLevel(row.idx, depth + 1, frag);
+    }
+  }
 }
 
 async function refreshTopN() {
@@ -385,38 +409,73 @@ async function refreshTopN() {
   const ff = document.createDocumentFragment();
   for (const r of t.files) {
     state.rectNames.set(r.idx, r.name);
-    ff.appendChild(renderRow(r, true));
+    ff.appendChild(renderRow(r));
   }
   elTopFilesList.appendChild(ff);
   const fd = document.createDocumentFragment();
   for (const r of t.dirs) {
     state.rectNames.set(r.idx, r.name);
     if (r.is_dir) dirIdxs.add(r.idx);
-    fd.appendChild(renderRow(r, true));
+    fd.appendChild(renderRow(r));
   }
   elTopDirsList.appendChild(fd);
 }
 
-function renderRow(row: DirRow, showFullName = false): HTMLElement {
+function renderRow(row: DirRow, depth: number = 0): HTMLElement {
   const el = document.createElement("div");
   el.className = "list-row" + (row.is_dir ? " dir" : "");
   el.dataset.idx = String(row.idx);
-  const icon = row.is_dir
-    ? `<span class="icon">${row.is_reparse ? "↪" : "▸"}</span>`
-    : `<span class="icon">·</span>`;
+  if (depth > 0) {
+    el.style.paddingLeft = `${10 + 16 * depth}px`;
+  }
+
+  // Real folders get an expand/collapse chevron (separate click target from the
+  // row body). Reparse points (junctions, app-exec links) are leaves to us —
+  // they get a different glyph and no chevron handler. Files get a plain dot.
+  const expandable = row.is_dir && !row.is_reparse;
+  const isExpanded = expandedIdxs.has(row.idx);
+  let iconHtml: string;
+  if (expandable) {
+    const chev = isExpanded ? "▼" : "▶";
+    iconHtml = `<span class="chev" title="${isExpanded ? "Collapse" : "Expand"}">${chev}</span>`;
+  } else if (row.is_reparse) {
+    iconHtml = `<span class="icon">↪</span>`;
+  } else {
+    iconHtml = `<span class="icon">·</span>`;
+  }
+
   el.innerHTML = `
-    <span class="name">${icon}<span class="filename" title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</span>${row.is_reparse ? '<span class="badge">link</span>' : ""}</span>
+    <span class="name">${iconHtml}<span class="filename" title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</span>${row.is_reparse ? '<span class="badge">link</span>' : ""}</span>
     <span class="size">${fmtBytes(row.size)}</span>
     <span class="pct"><span class="pct-bar"><span class="pct-fill" style="width:${(row.pct_parent * 100).toFixed(2)}%"></span></span></span>
     <span class="mtime">${fmtMtime(row.mtime)}</span>
   `;
+
+  // Chevron: toggle inline expansion without drilling.
+  const chev = el.querySelector(".chev") as HTMLElement | null;
+  if (chev) {
+    chev.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleExpand(row.idx);
+    });
+  }
+
+  // Row body: single-click drills into the folder (replaces the view). Files
+  // just select. This matches Skylar's stated expectation that one click on
+  // the row navigates rather than just highlights.
   el.addEventListener("click", (e) => {
     e.stopPropagation();
-    selectNode(row.idx);
+    if (row.is_dir && !row.is_reparse) {
+      drillInto(row.idx);
+    } else {
+      selectNode(row.idx);
+    }
   });
+  // Double-click: same as single for dirs (kept for muscle memory); for files,
+  // hand off to Explorer.
   el.addEventListener("dblclick", (e) => {
     e.stopPropagation();
-    if (row.is_dir) drillInto(row.idx);
+    if (row.is_dir && !row.is_reparse) drillInto(row.idx);
     else ipc.openInExplorer(row.idx).catch(() => {});
   });
   el.addEventListener("contextmenu", (e) => {

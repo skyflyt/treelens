@@ -343,8 +343,34 @@ body {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.list-row .name .icon { color: var(--text-subtle); width: 14px; display: inline-flex; flex-shrink: 0; }
-.list-row.dir .icon { color: var(--accent); }
+.list-row .name .icon,
+.list-row .name .chev {
+  color: var(--text-subtle);
+  width: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 9px;
+  line-height: 1;
+}
+.list-row.dir .icon,
+.list-row.dir .chev { color: var(--accent); }
+/* Chevron is its own click target — its hit area must feel like a button,
+   not a glyph. Pad it out and give it a hover affordance so it's discoverable. */
+.list-row .chev {
+  cursor: pointer;
+  padding: 4px 5px;
+  margin: -4px -5px -4px -3px;
+  border-radius: 4px;
+  user-select: none;
+  width: auto;
+  min-width: 14px;
+}
+.list-row .chev:hover {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
 .list-row .badge {
   background: var(--bg-elev-2);
   color: var(--text-muted);
