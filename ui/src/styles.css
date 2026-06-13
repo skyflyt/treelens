@@ -71,6 +71,16 @@ body {
   height: 100vh;
   width: 100vw;
 }
+/* Pin each region to its row explicitly. Without this, a hidden (display:none)
+   admin banner drops out of grid auto-placement and shifts .main into the
+   32px tab-bar track — collapsing the whole content area to a thin strip.
+   Explicit rows make a hidden banner simply leave row 2 empty (it's `auto`,
+   so it collapses to 0) without moving anything else. */
+.toolbar { grid-row: 1; }
+#admin-banner { grid-row: 2; }
+.tabbar { grid-row: 3; }
+.main { grid-row: 4; }
+.status { grid-row: 5; }
 
 /* --- toolbar --- */
 .toolbar {

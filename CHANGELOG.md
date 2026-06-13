@@ -4,6 +4,22 @@ All notable changes to Treelens are documented here.
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning is [SemVer](https://semver.org/) (0.x while pre-1.0).
 
+## [0.3.1] — 2026-06-13
+
+### Fixed
+- **Layout collapsed to a thin strip when the admin banner was hidden.** v0.3.0
+  added the tab bar as a new CSS-grid row. When the "switch to admin" banner is
+  hidden (running elevated, or dismissed), Chromium drops the `display:none`
+  banner from grid auto-placement, which shifted the main content area into the
+  32px tab-bar track and the footer into the `1fr` track — so the treemap and
+  side panel rendered as a ~30px sliver at the top of an otherwise black window,
+  and the Contents list looked empty. Fixed by pinning every region to an
+  explicit `grid-row`, so a hidden banner just leaves its (auto) row empty
+  without moving anything else. Verified elevated (banner hidden) on a live
+  scan — treemap and panel now fill the window.
+
+[0.3.1]: https://github.com/skyflyt/treelens/releases/tag/v0.3.1
+
 ## [0.3.0] — 2026-06-13
 
 Treelens grows a forensics/analysis layer, multi-tab scanning, and world-class
