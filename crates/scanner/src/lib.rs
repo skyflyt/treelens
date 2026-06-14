@@ -723,6 +723,33 @@ mod tests {
     }
 
     #[test]
+    fn excludes_full_path_glob() {
+        // A pattern containing a separator matches the absolute path, not just
+        // the name — so `*\skipme` drops only the skipme dir under this root.
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("keep")).unwrap();
+        fs::write(dir.path().join("keep").join("a.txt"), vec![0u8; 10]).unwrap();
+        fs::create_dir(dir.path().join("skipme")).unwrap();
+        fs::write(dir.path().join("skipme").join("b.txt"), vec![0u8; 999]).unwrap();
+
+        let pattern = format!("*{}skipme", std::path::MAIN_SEPARATOR);
+        let opts = ScanOptions {
+            threads: 2,
+            excludes: vec![pattern],
+            ..ScanOptions::new(dir.path())
+        };
+        let (rec_rx, _evt_rx, h) = spawn(opts, Cancel::new(), 1024, 16);
+        let recs: Vec<Record> = rec_rx.iter().collect();
+        let _ = h.join();
+        let names: Vec<&str> = recs.iter().map(|r| r.name.as_str()).collect();
+        assert!(names.contains(&"keep"));
+        assert!(names.contains(&"a.txt"));
+        assert!(!names.contains(&"skipme"), "path-glob should drop skipme dir");
+        assert!(!names.contains(&"b.txt"));
+        assert_eq!(recs.iter().map(|r| r.logical).sum::<u64>(), 10);
+    }
+
+    #[test]
     fn cancellation_stops_quickly() {
         let dir = tempdir().unwrap();
         for i in 0..50 {

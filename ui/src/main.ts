@@ -394,6 +394,7 @@ const treemap = new Treemap(
 
   setupSearch();
   setupColumnSort();
+  setupRowDelegation();
   $("#help-btn").addEventListener("click", () => toggleHelp());
   $("#settings-btn").addEventListener("click", () => openSettings());
   elScanErrorsPill.addEventListener("click", () => showScanErrors());
@@ -1800,50 +1801,63 @@ function renderRow(row: DirRow, depth: number = 0): HTMLElement {
     <span class="mtime">${fmtMtime(row.mtime)}</span>
   `;
 
-  // Chevron: toggle inline expansion without drilling.
-  const chev = el.querySelector(".chev") as HTMLElement | null;
-  if (chev) {
-    chev.addEventListener("click", (e) => {
+  // Row interactions are handled by event delegation on the list containers
+  // (see setupRowDelegation) rather than per-row listeners, so re-rendering the
+  // virtual window doesn't churn thousands of handlers.
+  return el;
+}
+
+/** Resolve the row idx for a delegated list event, or null if not on a row. */
+function rowIdxFromEvent(e: Event): number | null {
+  const rowEl = (e.target as HTMLElement).closest<HTMLElement>(".list-row");
+  if (!rowEl || rowEl.dataset.idx === undefined) return null;
+  const n = Number(rowEl.dataset.idx);
+  return Number.isNaN(n) ? null : n;
+}
+
+/** One set of delegated handlers per list container. Reads the row idx from the
+ *  target's `.list-row` ancestor and looks type up via the dirIdxs/reparseIdxs
+ *  sets, matching the old per-row behavior exactly. */
+function setupRowDelegation() {
+  for (const list of [elDirList, elTopFilesList, elTopDirsList]) {
+    list.addEventListener("click", (e) => {
+      const idx = rowIdxFromEvent(e);
+      if (idx === null) return;
       e.stopPropagation();
-      toggleExpand(row.idx);
+      // Chevron → toggle inline expansion without selecting/drilling.
+      if ((e.target as HTMLElement).closest(".chev")) {
+        toggleExpand(idx);
+        return;
+      }
+      if (e.ctrlKey || e.metaKey || e.shiftKey) {
+        cancelPendingRowClick();
+        clickSelect(idx, e);
+        return;
+      }
+      // Defer the single-click; a dblclick within the window cancels it.
+      cancelPendingRowClick();
+      pendingRowClick = window.setTimeout(() => {
+        pendingRowClick = undefined;
+        selectNode(idx);
+        if (nameIsDir(idx) && !reparseIdxs.has(idx)) toggleExpand(idx);
+      }, DOUBLE_CLICK_MS);
+    });
+    list.addEventListener("dblclick", (e) => {
+      const idx = rowIdxFromEvent(e);
+      if (idx === null) return;
+      e.stopPropagation();
+      cancelPendingRowClick();
+      if (nameIsDir(idx) && !reparseIdxs.has(idx)) drillInto(idx);
+      else ipc.openFile(idx).catch(() => ipc.openInExplorer(idx).catch(() => {}));
+    });
+    list.addEventListener("contextmenu", (e) => {
+      const idx = rowIdxFromEvent(e);
+      if (idx === null) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openCtxMenu(idx, (e as MouseEvent).clientX, (e as MouseEvent).clientY);
     });
   }
-
-  // Row body interactions:
-  //  - Ctrl/Shift-click → adjust the multi-selection (no expand/drill).
-  //  - single-click a folder → select + expand/collapse in place.
-  //  - single-click a file   → select.
-  //  - double-click a folder → drill in (filter the view to it).
-  //  - double-click a file   → open in its default app.
-  // A short timer disambiguates single vs. double so a double-click doesn't
-  // also toggle the expand on its way to drilling.
-  el.addEventListener("click", (e) => {
-    e.stopPropagation();
-    if (e.ctrlKey || e.metaKey || e.shiftKey) {
-      cancelPendingRowClick();
-      clickSelect(row.idx, e);
-      return;
-    }
-    // Defer the single-click action; a dblclick within the window cancels it.
-    cancelPendingRowClick();
-    pendingRowClick = window.setTimeout(() => {
-      pendingRowClick = undefined;
-      selectNode(row.idx);
-      if (row.is_dir && !row.is_reparse) toggleExpand(row.idx);
-    }, DOUBLE_CLICK_MS);
-  });
-  el.addEventListener("dblclick", (e) => {
-    e.stopPropagation();
-    cancelPendingRowClick();
-    if (row.is_dir && !row.is_reparse) drillInto(row.idx);
-    else ipc.openFile(row.idx).catch(() => ipc.openInExplorer(row.idx).catch(() => {}));
-  });
-  el.addEventListener("contextmenu", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    openCtxMenu(row.idx, e.clientX, e.clientY);
-  });
-  return el;
 }
 
 // ---------- treemap chrome (depth + legend) ----------

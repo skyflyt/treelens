@@ -726,4 +726,53 @@ mod tests {
         assert_eq!(report.total_bytes, 4200);
         assert!(!report.truncated);
     }
+
+    #[test]
+    fn delete_permanent_removes_file_and_nested_dir() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("gone.txt");
+        std::fs::write(&f, b"bye").unwrap();
+        assert!(delete_permanent(&f).unwrap());
+        assert!(!f.exists());
+
+        // A non-empty directory must be removed recursively.
+        let nested = dir.path().join("tree");
+        std::fs::create_dir_all(nested.join("a").join("b")).unwrap();
+        std::fs::write(nested.join("a").join("b").join("deep.bin"), vec![0u8; 8]).unwrap();
+        assert!(delete_permanent(&nested).unwrap());
+        assert!(!nested.exists());
+
+        // The result is a truthful post-check ("is it gone?"), so a path that
+        // never existed is trivially gone → true, not an error.
+        let missing = dir.path().join("nope");
+        assert!(delete_permanent(&missing).unwrap());
+    }
+
+    #[test]
+    fn delete_permanent_many_counts_gone() {
+        let dir = tempdir().unwrap();
+        let a = dir.path().join("a.txt");
+        let b = dir.path().join("b.txt");
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        let n = delete_permanent_many(&[a.clone(), b.clone()]).unwrap();
+        assert_eq!(n, 2, "both real files are gone afterward");
+        assert!(!a.exists() && !b.exists());
+    }
+
+    #[test]
+    fn find_empty_dirs_finds_only_truly_empty() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("empty")).unwrap();
+        std::fs::create_dir(root.join("haschild")).unwrap();
+        std::fs::write(root.join("haschild").join("f.txt"), b"x").unwrap();
+        let found = find_empty_dirs(root, 100).unwrap();
+        let names: Vec<String> = found
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert!(names.contains(&"empty".to_string()));
+        assert!(!names.contains(&"haschild".to_string()));
+    }
 }
