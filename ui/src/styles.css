@@ -600,6 +600,17 @@ body {
   flex: 1;
 }
 
+/* contents live filter */
+.contents-filter-bar {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev-1);
+}
+.contents-filter-bar .search-input {
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
 /* file-type breakdown */
 .types-header { grid-template-columns: 1fr 90px 70px; }
 .col-count { text-align: right; }

@@ -250,6 +250,7 @@ const elSearchInput = $<HTMLInputElement>("#search-input");
 const elSearchList = $("#search-list");
 const elSearchMinSize = $<HTMLSelectElement>("#search-minsize");
 const elTypesList = $("#types-list");
+const elContentsFilter = $<HTMLInputElement>("#contents-filter");
 
 const treemap = new Treemap(
   elTreemap,
@@ -364,6 +365,19 @@ const treemap = new Treemap(
   setupSearch();
   setupColumnSort();
   $("#help-btn").addEventListener("click", () => toggleHelp());
+
+  // Live Contents filter — client-side, instant, no IPC.
+  elContentsFilter.addEventListener("input", () => {
+    contentsFilter = elContentsFilter.value;
+    applyContentsFilter(false);
+  });
+  elContentsFilter.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      elContentsFilter.value = "";
+      contentsFilter = "";
+      applyContentsFilter(false);
+    }
+  });
 
   // New scan tab.
   elNewTabBtn.addEventListener("click", () => newTab());
@@ -1116,13 +1130,31 @@ interface FlatRow { row: DirRow; depth: number; }
 const ROW_HEIGHT = 26;       // px; must match .list-row height in CSS
 const WINDOW_BUFFER = 8;     // extra rows above/below the viewport
 
-/** The full flattened row list for the current view (root's children + any
- *  inline-expanded subtrees). The virtual scroller renders only the slice that
- *  is on screen, so this can hold tens of thousands of rows cheaply. */
+/** The complete flattened list for the current view (root's children + any
+ *  inline-expanded subtrees), before the Contents filter is applied. */
+let allRows: FlatRow[] = [];
+/** The currently *visible* rows — `allRows` narrowed by the live Contents
+ *  filter. Selection, keyboard nav, and the virtual scroller all operate on
+ *  this, so they automatically respect the filter. */
 let flatRows: FlatRow[] = [];
+/** Live substring filter for the Contents list (client-side, no IPC). */
+let contentsFilter = "";
+
+/** Narrow `allRows` by the current filter into `flatRows`, then re-render. */
+function applyContentsFilter(preserveScroll = false) {
+  const q = contentsFilter.trim().toLowerCase();
+  flatRows = q ? allRows.filter((f) => f.row.name.toLowerCase().includes(q)) : allRows;
+  renderDirWindow(preserveScroll);
+}
 
 async function refreshDirList(seq: number = drillSeq, preserveScroll = false) {
   if (state.currentRoot === null) return;
+  // A fresh drill/navigate (not an in-place expand) clears the live filter so
+  // the new folder shows in full.
+  if (!preserveScroll && contentsFilter) {
+    contentsFilter = "";
+    elContentsFilter.value = "";
+  }
   const PER_LEVEL_LIMIT = 8192;
   const next: FlatRow[] = [];
 
@@ -1144,9 +1176,9 @@ async function refreshDirList(seq: number = drillSeq, preserveScroll = false) {
   // superseded in-flight render can never pollute dirIdxs/reparseIdxs/rectNames
   // with rows belonging to a different drill or tab.
   for (const f of next) noteRow(f.row);
-  flatRows = next;
+  allRows = next;
   // Fresh drill resets scroll to top; chevron-expands keep the user in place.
-  renderDirWindow(preserveScroll);
+  applyContentsFilter(preserveScroll);
 }
 
 /** Render only the rows visible in the viewport (windowed virtualization).
