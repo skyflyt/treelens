@@ -2247,52 +2247,52 @@ function updateTooltip(rect: Rect | null, x: number, y: number) {
 
 // ---------- context menu ----------
 
-interface CtxItem { label: string; danger?: boolean; shortcut?: string; action: () => void; }
+interface CtxItem { label: string; icon?: string; danger?: boolean; shortcut?: string; action: () => void; }
+
+let ctxKeyHandler: ((e: KeyboardEvent) => void) | null = null;
 
 function openCtxMenu(idx: number, x: number, y: number) {
   closeCtxMenu();
   const isDir = nameIsDir(idx);
   const isReparse = reparseIdxs.has(idx);
+  const multi = state.selectedIdxs.size > 1 && state.selectedIdxs.has(idx);
   const items: CtxItem[] = [
     isDir
-      ? { label: "Drill into folder", shortcut: "Enter", action: () => drillInto(idx) }
-      : { label: "Open (edit)", shortcut: "Enter", action: () => ipc.openFile(idx).catch((e) => toastErr("Open failed", e)) },
-    ...(!isDir ? [{ label: "Inspect (checksums, hidden data)", action: () => inspectNode(idx) }] : []),
-    { label: "Reveal in Explorer", action: () => ipc.openInExplorer(idx).catch(() => {}) },
-    ...(isDir && !isReparse ? [{ label: "Open in Terminal", action: () => ipc.openInTerminal(idx).catch(() => {}) }] : []),
-    { label: "Copy full path", action: async () => {
+      ? { label: "Drill into folder", icon: "📂", shortcut: "Enter", action: () => drillInto(idx) }
+      : { label: "Open", icon: "↗", shortcut: "Enter", action: () => ipc.openFile(idx).catch((e) => toastErr("Open failed", e)) },
+    ...(!isDir ? [{ label: "Inspect (checksums, hidden data)", icon: "🔬", action: () => inspectNode(idx) }] : []),
+    { label: "Reveal in Explorer", icon: "🗂", action: () => ipc.openInExplorer(idx).catch(() => {}) },
+    ...(isDir && !isReparse ? [{ label: "Open in Terminal", icon: "▶", action: () => ipc.openInTerminal(idx).catch(() => {}) }] : []),
+    { label: "Copy full path", icon: "⧉", action: async () => {
       try {
         const p = await ipc.copyPath(idx);
         await navigator.clipboard.writeText(p);
+        toast("Path copied", "success", 1800);
       } catch {}
     } },
     { label: "—", action: () => {} },
     ...(isDir && !isReparse ? [
-      { label: "New folder…", action: () => promptCreate(idx, "folder") },
-      { label: "New file…", action: () => promptCreate(idx, "file") },
+      { label: "New folder…", icon: "📁", action: () => promptCreate(idx, "folder") },
+      { label: "New file…", icon: "📄", action: () => promptCreate(idx, "file") },
     ] : []),
-    { label: "Rename…", shortcut: "F2", action: () => promptRename(idx) },
+    { label: "Rename…", icon: "✎", shortcut: "F2", action: () => promptRename(idx) },
     ...(isDir && !isReparse ? [
       { label: "—", action: () => {} },
-      { label: "Find reclaimable junk (logs, temp, dumps)…", action: () => runJunkFinder(idx) },
-      { label: "Find files older than 1 year (≥10 MB)", action: () => runSuperSkillOldFiles(idx) },
-      { label: "Find empty folders", action: () => runSuperSkillEmpty(idx) },
+      { label: "Find reclaimable junk (logs, temp, dumps)…", icon: "🧹", action: () => runJunkFinder(idx) },
+      { label: "Find files older than 1 year (≥10 MB)", icon: "🕔", action: () => runSuperSkillOldFiles(idx) },
+      { label: "Find empty folders", icon: "∅", action: () => runSuperSkillEmpty(idx) },
     ] : []),
     { label: "—", action: () => {} },
     {
-      label:
-        state.selectedIdxs.size > 1 && state.selectedIdxs.has(idx)
-          ? `Move ${state.selectedIdxs.size} items to Recycle Bin…`
-          : "Move to Recycle Bin…",
+      label: multi ? `Move ${state.selectedIdxs.size} items to Recycle Bin…` : "Move to Recycle Bin…",
+      icon: "♻",
       danger: true,
       shortcut: "Del",
       action: () => confirmRecycle(idx),
     },
     {
-      label:
-        state.selectedIdxs.size > 1 && state.selectedIdxs.has(idx)
-          ? `Delete ${state.selectedIdxs.size} items permanently…`
-          : "Delete permanently…",
+      label: multi ? `Delete ${state.selectedIdxs.size} items permanently…` : "Delete permanently…",
+      icon: "🗑",
       danger: true,
       shortcut: "Shift+Del",
       action: () => confirmDeletePermanent(idx),
@@ -2300,6 +2300,7 @@ function openCtxMenu(idx: number, x: number, y: number) {
   ];
   const menu = elCtxMenu;
   menu.innerHTML = "";
+  const rows: HTMLElement[] = [];
   for (const item of items) {
     if (item.label === "—") {
       const sep = document.createElement("div");
@@ -2309,21 +2310,66 @@ function openCtxMenu(idx: number, x: number, y: number) {
     }
     const it = document.createElement("div");
     it.className = "ctx-item" + (item.danger ? " danger" : "");
-    it.innerHTML = `<span>${escapeHtml(item.label)}</span>${item.shortcut ? `<span class="ctx-shortcut">${item.shortcut}</span>` : ""}`;
+    it.setAttribute("role", "menuitem");
+    it.innerHTML =
+      `<span class="ctx-icon">${item.icon ?? ""}</span>` +
+      `<span class="ctx-label">${escapeHtml(item.label)}</span>` +
+      `${item.shortcut ? `<span class="ctx-shortcut">${item.shortcut}</span>` : ""}`;
     it.addEventListener("click", (e) => {
       e.stopPropagation();
       closeCtxMenu();
       try { item.action(); } catch {}
     });
+    it.addEventListener("mouseenter", () => setCtxActive(rows.indexOf(it), rows));
     menu.appendChild(it);
+    rows.push(it);
   }
-  menu.style.left = Math.min(window.innerWidth - 220, x) + "px";
-  menu.style.top = Math.min(window.innerHeight - menu.offsetHeight - 10, y) + "px";
+
+  // Show first so we can measure, then clamp/flip within the viewport.
   menu.hidden = false;
+  menu.style.left = "0px";
+  menu.style.top = "0px";
+  const w = menu.offsetWidth;
+  const h = menu.offsetHeight;
+  const pad = 8;
+  const left = x + w > window.innerWidth - pad ? Math.max(pad, x - w) : x;
+  const top = y + h > window.innerHeight - pad ? Math.max(pad, y - h) : y;
+  menu.style.left = left + "px";
+  menu.style.top = top + "px";
+
+  // Keyboard navigation while the menu is open.
+  let active = -1;
+  const setActive = (i: number) => {
+    active = (i + rows.length) % rows.length;
+    setCtxActive(active, rows);
+  };
+  ctxKeyHandler = (e: KeyboardEvent) => {
+    // Capture phase + stopPropagation so these don't also drive list nav.
+    if (e.key === "ArrowDown") { e.preventDefault(); e.stopPropagation(); setActive(active + 1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); e.stopPropagation(); setActive(active - 1); }
+    else if (e.key === "Enter") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (active >= 0) rows[active].click();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeCtxMenu();
+    }
+  };
+  document.addEventListener("keydown", ctxKeyHandler, true);
+}
+
+function setCtxActive(i: number, rows: HTMLElement[]) {
+  rows.forEach((r, j) => r.classList.toggle("active", j === i));
 }
 
 function closeCtxMenu() {
   elCtxMenu.hidden = true;
+  if (ctxKeyHandler) {
+    document.removeEventListener("keydown", ctxKeyHandler, true);
+    ctxKeyHandler = null;
+  }
 }
 
 async function promptCreate(parentIdx: number, kind: "folder" | "file") {

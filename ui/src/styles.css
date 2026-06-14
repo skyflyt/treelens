@@ -1137,8 +1137,18 @@ body.resizing * { cursor: col-resize !important; }
   align-items: center;
   gap: 8px;
 }
-.ctx-item:hover { background: var(--row-hover); }
+.ctx-item:hover,
+.ctx-item.active { background: var(--row-hover); }
+.ctx-item.active { outline: none; }
 .ctx-item.danger { color: var(--danger); }
+.ctx-icon {
+  flex: none;
+  width: 18px;
+  text-align: center;
+  font-size: 12px;
+  opacity: 0.9;
+}
+.ctx-label { flex: 1; min-width: 0; }
 .ctx-sep { height: 1px; background: var(--border); margin: 4px 0; }
 .ctx-shortcut { margin-left: auto; color: var(--text-subtle); font-size: 11px; font-family: var(--font-mono); }
 
