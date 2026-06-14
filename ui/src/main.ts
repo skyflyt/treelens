@@ -171,6 +171,10 @@ async function switchToTab(id: number) {
   renderTabBar();
   drillSeq++; // invalidate any in-flight renders from the previous tab
   if (state.currentRoot !== null) {
+    // Switching to a scanned tab: make sure the empty-state overlay from a
+    // previous empty tab is dismissed (it's only toggled in renderEmptyState /
+    // handleScanComplete, neither of which runs on this path).
+    elTreemapEmpty.hidden = true;
     await refreshAll(drillSeq);
     elStatusSummary.textContent = state.totals
       ? `${fmtCount(state.totals.files)} files · ${fmtCount(state.totals.dirs)} folders · ${fmtBytes(state.totals.bytes)}`
