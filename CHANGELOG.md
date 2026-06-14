@@ -4,6 +4,21 @@ All notable changes to Treelens are documented here.
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning is [SemVer](https://semver.org/) (0.x while pre-1.0).
 
+## [0.6.3] — 2026-06-14
+
+### Fixed
+- Folder rows in the **Top files / Top folders** tabs showed an expand chevron
+  that did nothing (inline expansion only re-renders the Contents tree). Those
+  flat ranked lists now render folders with a plain folder glyph — single-click
+  selects, double-click drills in — and expand stays a Contents-only feature.
+
+### CI
+- Pinned the Windows runners to `windows-2022` after GitHub's `windows-latest` →
+  `windows-2025` migration started failing the clippy step on the new image
+  (identical toolchain; clean locally).
+
+[0.6.3]: https://github.com/skyflyt/treelens/releases/tag/v0.6.3
+
 ## [0.6.2] — 2026-06-14
 
 A hardening pass from a two-agent competitive review (top 10 findings).
