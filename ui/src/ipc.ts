@@ -48,6 +48,20 @@ export interface BreadcrumbEntry {
   name: string;
 }
 
+export type SearchKind = "all" | "files" | "dirs";
+
+export interface SearchHit {
+  idx: number;
+  name: string;
+  path: string;
+  size: number;
+  pct_root: number;
+  file_count: number;
+  mtime: number;
+  is_dir: boolean;
+  is_reparse: boolean;
+}
+
 export interface NodeSummary {
   idx: number;
   name: string;
@@ -226,6 +240,24 @@ export const ipc = {
   },
   nodeSummary(idx: number) {
     return invoke<NodeSummary>("node_summary", { tab: activeTab, idx });
+  },
+  search(
+    root: number,
+    query: string,
+    minSize: number,
+    kind: SearchKind,
+    limit: number,
+    sizeMode: SizeMode,
+  ) {
+    return invoke<SearchHit[]>("search", {
+      tab: activeTab,
+      root,
+      query,
+      minSize,
+      kind,
+      limit,
+      sizeMode,
+    });
   },
   openInExplorer(idx: number) {
     return invoke<void>("open_in_explorer", { tab: activeTab, idx });

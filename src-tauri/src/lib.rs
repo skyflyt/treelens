@@ -16,7 +16,7 @@ use std::thread;
 use tauri::{AppHandle, Emitter, State};
 
 use state::ScanState;
-use tree::{DirRow, LayoutOpts, Rect, SizeMode, SortKey, Tree};
+use tree::{DirRow, LayoutOpts, Rect, SearchKind, SearchOpts, SizeMode, SortKey, Tree};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ScanProgressPayload {
@@ -368,6 +368,90 @@ fn node_summary(
             oldest_mtime: n.oldest_mtime,
         })
     })
+}
+
+#[derive(Debug, Serialize)]
+struct SearchHit {
+    idx: u32,
+    name: String,
+    /// Absolute path, so a result anywhere in the subtree is unambiguous.
+    path: String,
+    size: u64,
+    pct_root: f32,
+    file_count: u64,
+    mtime: i64,
+    is_dir: bool,
+    is_reparse: bool,
+}
+
+fn parse_search_kind(s: &str) -> SearchKind {
+    match s {
+        "files" => SearchKind::FilesOnly,
+        "dirs" => SearchKind::DirsOnly,
+        _ => SearchKind::All,
+    }
+}
+
+/// Search the subtree under `root` for nodes matching a name substring and the
+/// size/kind filters, returning the largest `limit` matches with full paths.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn search(
+    tab: u32,
+    root: u32,
+    query: String,
+    min_size: u64,
+    kind: String,
+    limit: usize,
+    size_mode: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<SearchHit>, CommandError> {
+    let _timer = TimedSpan::new("search");
+    let tabs = state.tabs.read();
+    let td = tabs.get(&tab).ok_or_else(|| CommandError {
+        message: "no scan loaded".into(),
+    })?;
+    if root as usize >= td.tree.nodes.len() {
+        return Err(CommandError {
+            message: format!("invalid root {root}"),
+        });
+    }
+    let mode = parse_mode(&size_mode);
+    let opts = SearchOpts {
+        query,
+        min_size,
+        kind: parse_search_kind(&kind),
+        limit: limit.clamp(1, 5000),
+    };
+    let rows = tree::search(&td.tree, root, &opts, mode);
+    let hits = rows
+        .into_iter()
+        .map(|r| {
+            // Build the absolute path the same way node_path does: drop the
+            // root node's recorded name and join the rest onto the scan root.
+            let mut segments: Vec<String> =
+                td.tree.path(r.idx).into_iter().map(|(_, n)| n).collect();
+            if !segments.is_empty() {
+                segments.remove(0);
+            }
+            let mut p = td.scan_path.clone();
+            for seg in segments {
+                p.push(seg);
+            }
+            SearchHit {
+                idx: r.idx,
+                name: r.name,
+                path: p.to_string_lossy().to_string(),
+                size: r.size,
+                pct_root: r.pct_root,
+                file_count: r.file_count,
+                mtime: r.mtime,
+                is_dir: r.is_dir,
+                is_reparse: r.is_reparse,
+            }
+        })
+        .collect();
+    Ok(hits)
 }
 
 /// Resolve a node idx within tab `tab` to its absolute filesystem path.
@@ -1224,6 +1308,7 @@ pub fn run() {
             top_n,
             breadcrumb,
             node_summary,
+            search,
             open_in_explorer,
             open_in_terminal,
             copy_path,

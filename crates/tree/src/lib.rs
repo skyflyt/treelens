@@ -473,6 +473,72 @@ pub fn top_dirs(tree: &Tree, root_idx: u32, n: usize, mode: SizeMode) -> Vec<Dir
         .collect()
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SearchKind {
+    All,
+    FilesOnly,
+    DirsOnly,
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchOpts {
+    /// Case-insensitive substring match against the node name. Empty matches any
+    /// name (use with the size/kind filters to e.g. "find everything ≥ 100 MB").
+    pub query: String,
+    /// Minimum size (in the active size mode) to include.
+    pub min_size: u64,
+    pub kind: SearchKind,
+    /// Cap on results returned; the largest matches by size are kept.
+    pub limit: usize,
+}
+
+/// Search the subtree rooted at `root_idx` for nodes whose name contains
+/// `query` (case-insensitive) and that pass the size/kind filters. Returns the
+/// largest `limit` matches by size, biggest first. The root itself is excluded.
+pub fn search(tree: &Tree, root_idx: u32, opts: &SearchOpts, mode: SizeMode) -> Vec<DirRow> {
+    let q = opts.query.to_ascii_lowercase();
+    let root_size = tree.root_size(mode).max(1);
+    let limit = opts.limit.max(1);
+    let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<(u64, u32)>> =
+        std::collections::BinaryHeap::with_capacity(limit + 1);
+    walk_subtree(tree, root_idx, &mut |idx, node| {
+        if idx == root_idx {
+            return;
+        }
+        match opts.kind {
+            SearchKind::FilesOnly if node.is_dir() => return,
+            SearchKind::DirsOnly if !node.is_dir() => return,
+            _ => {}
+        }
+        let size = match mode {
+            SizeMode::Allocated => node.allocated,
+            SizeMode::Logical => node.logical,
+        };
+        if size < opts.min_size {
+            return;
+        }
+        if !q.is_empty() && !node.name.to_ascii_lowercase().contains(&q) {
+            return;
+        }
+        heap.push(std::cmp::Reverse((size, idx)));
+        if heap.len() > limit {
+            heap.pop();
+        }
+    });
+    let mut out: Vec<(u64, u32)> = heap.into_iter().map(|r| r.0).collect();
+    out.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    out.into_iter()
+        .map(|(_, i)| {
+            let parent_size = if tree.nodes[i as usize].parent == u32::MAX {
+                root_size
+            } else {
+                tree.size_of(tree.nodes[i as usize].parent, mode).max(1)
+            };
+            row_for(tree, i, parent_size, root_size, mode)
+        })
+        .collect()
+}
+
 /// A directory is a "passthrough" if a single child accounts for ≥95% of its
 /// size — meaning the directory itself adds essentially nothing over its child.
 /// We hide passthroughs from top_dirs in favor of the child that's doing the
@@ -830,6 +896,61 @@ mod tests {
         assert_eq!(top.len(), 2);
         assert_eq!(top[0].name, "b.bin");
         assert_eq!(top[1].name, "a.bin");
+    }
+
+    #[test]
+    fn search_matches_name_substring_across_subtree() {
+        let t = flat();
+        // ".bin" matches every file (including the nested one), biggest first.
+        let opts = SearchOpts {
+            query: ".BIN".into(), // case-insensitive
+            min_size: 0,
+            kind: SearchKind::All,
+            limit: 100,
+        };
+        let hits = search(&t, 0, &opts, SizeMode::Logical);
+        let names: Vec<&str> = hits.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, &["b.bin", "a.bin", "c.bin"]); // 300, 100, 50
+    }
+
+    #[test]
+    fn search_respects_min_size_and_kind() {
+        let t = flat();
+        // Files only, ≥ 100 bytes: drops c.bin (50) and the "sub" dir.
+        let opts = SearchOpts {
+            query: String::new(),
+            min_size: 100,
+            kind: SearchKind::FilesOnly,
+            limit: 100,
+        };
+        let hits = search(&t, 0, &opts, SizeMode::Logical);
+        let names: Vec<&str> = hits.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, &["b.bin", "a.bin"]);
+
+        // Dirs only finds "sub" and nothing else (root is excluded).
+        let opts = SearchOpts {
+            query: String::new(),
+            min_size: 0,
+            kind: SearchKind::DirsOnly,
+            limit: 100,
+        };
+        let dirs = search(&t, 0, &opts, SizeMode::Logical);
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs[0].name, "sub");
+    }
+
+    #[test]
+    fn search_limit_keeps_largest() {
+        let t = flat();
+        let opts = SearchOpts {
+            query: String::new(),
+            min_size: 0,
+            kind: SearchKind::FilesOnly,
+            limit: 1,
+        };
+        let hits = search(&t, 0, &opts, SizeMode::Logical);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].name, "b.bin"); // the single largest file
     }
 
     #[test]

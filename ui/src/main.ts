@@ -11,6 +11,8 @@ import {
   setActiveTab,
   type DirRow,
   type Rect,
+  type SearchHit,
+  type SearchKind,
   type SizeMode,
   type SortKey,
   type StegoMethod,
@@ -233,6 +235,9 @@ const elStatusVersion = $("#status-version");
 const elScanTabs = $("#scan-tabs");
 const elNewTabBtn = $("#new-tab-btn");
 const elInspector = $("#inspector");
+const elSearchInput = $<HTMLInputElement>("#search-input");
+const elSearchList = $("#search-list");
+const elSearchMinSize = $<HTMLSelectElement>("#search-minsize");
 
 const treemap = new Treemap(
   elTreemap,
@@ -333,8 +338,11 @@ const treemap = new Treemap(
       document.querySelectorAll(".side-tabs .tab").forEach((x) => x.classList.toggle("active", x === t));
       document.querySelectorAll(".tab-pane").forEach((x) => x.classList.toggle("active", x.id === `tab-${tab}`));
       if (tab === "inspect") refreshInspector();
+      if (tab === "search") elSearchInput.focus();
     });
   });
+
+  setupSearch();
 
   // New scan tab.
   elNewTabBtn.addEventListener("click", () => newTab());
@@ -1048,6 +1056,110 @@ async function refreshTopN(seq: number = drillSeq) {
     fd.appendChild(renderRow(r));
   }
   elTopDirsList.appendChild(fd);
+}
+
+// ---------- search ----------
+
+let searchKind: SearchKind = "all";
+let searchSeq = 0;
+let searchDebounce: ReturnType<typeof setTimeout> | null = null;
+
+function setupSearch() {
+  elSearchInput.addEventListener("input", () => {
+    if (searchDebounce) clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(runSearch, 180);
+  });
+  elSearchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      if (searchDebounce) clearTimeout(searchDebounce);
+      runSearch();
+    } else if (e.key === "Escape") {
+      elSearchInput.value = "";
+      runSearch();
+    }
+  });
+  elSearchMinSize.addEventListener("change", runSearch);
+  document.querySelectorAll<HTMLElement>("[data-skind]").forEach((b) => {
+    b.addEventListener("click", () => {
+      searchKind = (b.dataset.skind as SearchKind) || "all";
+      document
+        .querySelectorAll("[data-skind]")
+        .forEach((x) => x.classList.toggle("active", x === b));
+      runSearch();
+    });
+  });
+}
+
+async function runSearch() {
+  const query = elSearchInput.value.trim();
+  const minSize = Number(elSearchMinSize.value) || 0;
+  const root = state.currentRoot ?? state.scanRoot;
+  // Nothing to search against, and no useful query/filter — show the hint.
+  if (root === null || (query === "" && minSize === 0 && searchKind === "all")) {
+    elSearchList.innerHTML =
+      '<div class="search-hint muted small">Type to search the current folder and everything under it.</div>';
+    return;
+  }
+  const seq = ++searchSeq;
+  try {
+    const hits = await ipc.search(root, query, minSize, searchKind, 500, state.sizeMode);
+    if (seq !== searchSeq) return; // a newer search superseded us
+    renderSearchResults(hits);
+  } catch (e) {
+    if (seq !== searchSeq) return;
+    elSearchList.innerHTML = `<div class="search-hint muted small">Search failed: ${escapeHtml(
+      (e as Error)?.message ?? String(e),
+    )}</div>`;
+  }
+}
+
+function renderSearchResults(hits: SearchHit[]) {
+  if (hits.length === 0) {
+    elSearchList.innerHTML = '<div class="search-hint muted small">No matches.</div>';
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for (const h of hits) {
+    const el = document.createElement("div");
+    el.className = "list-row search-row" + (h.is_dir ? " dir" : "");
+    el.dataset.idx = String(h.idx);
+    const icon = h.is_dir ? "📁" : "📄";
+    el.innerHTML =
+      `<span class="col col-name"><span class="row-icon">${icon}</span>` +
+      `<span class="search-name">${escapeHtml(h.name)}</span>` +
+      `<span class="search-path">${escapeHtml(h.path)}</span></span>` +
+      `<span class="col col-size">${escapeHtml(fmtBytes(h.size))}</span>` +
+      `<span class="col col-mtime">${escapeHtml(fmtMtime(h.mtime))}</span>`;
+    el.addEventListener("click", () => revealSearchHit(h));
+    el.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      openCtxMenu(h.idx, e.clientX, e.clientY);
+    });
+    frag.appendChild(el);
+  }
+  elSearchList.innerHTML = "";
+  elSearchList.appendChild(frag);
+}
+
+/** Jump from a search result to where it lives: drill into a folder, or open
+ *  the file's containing folder and select it. Then switch to Contents. */
+async function revealSearchHit(h: SearchHit) {
+  if (h.is_dir) {
+    await navigateToFolder(h.idx);
+  } else {
+    const crumbs = await ipc.breadcrumb(h.idx).catch(() => []);
+    const parent = crumbs.length >= 2 ? crumbs[crumbs.length - 2].idx : state.scanRoot;
+    if (parent !== null && parent !== undefined && parent !== state.currentRoot) {
+      await navigateToFolder(parent);
+    }
+    selectNode(h.idx);
+  }
+  document
+    .querySelectorAll(".side-tabs .tab")
+    .forEach((x) => x.classList.toggle("active", (x as HTMLElement).dataset.tab === "contents"));
+  document
+    .querySelectorAll(".tab-pane")
+    .forEach((x) => x.classList.toggle("active", x.id === "tab-contents"));
 }
 
 function renderRow(row: DirRow, depth: number = 0): HTMLElement {

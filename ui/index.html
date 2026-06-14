@@ -88,6 +88,7 @@
         <aside class="side-pane">
           <nav class="side-tabs" role="tablist">
             <button class="tab active" data-tab="contents" role="tab">Contents</button>
+            <button class="tab" data-tab="search" role="tab">Search</button>
             <button class="tab" data-tab="topfiles" role="tab">Top files</button>
             <button class="tab" data-tab="topdirs" role="tab">Top folders</button>
             <button class="tab" data-tab="inspect" role="tab">Inspect</button>
@@ -101,6 +102,43 @@
                 <span class="col col-mtime">Modified</span>
               </div>
               <div class="list-viewport" id="dir-list"></div>
+            </div>
+            <div class="tab-pane" id="tab-search">
+              <div class="search-controls">
+                <input
+                  type="search"
+                  id="search-input"
+                  class="search-input"
+                  placeholder="Find files & folders in this view…"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <div class="search-filters">
+                  <div class="seg" role="group" aria-label="Result kind">
+                    <button class="seg-opt active" data-skind="all" id="skind-all">All</button>
+                    <button class="seg-opt" data-skind="files" id="skind-files">Files</button>
+                    <button class="seg-opt" data-skind="dirs" id="skind-dirs">Folders</button>
+                  </div>
+                  <label class="search-minsize">
+                    ≥
+                    <select id="search-minsize">
+                      <option value="0">any</option>
+                      <option value="1048576">1 MB</option>
+                      <option value="10485760">10 MB</option>
+                      <option value="104857600">100 MB</option>
+                      <option value="1073741824">1 GB</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+              <div class="list-header search-header">
+                <span class="col col-name">Name / path</span>
+                <span class="col col-size">Size</span>
+                <span class="col col-mtime">Modified</span>
+              </div>
+              <div class="list-viewport" id="search-list">
+                <div class="search-hint muted small">Type to search the current folder and everything under it.</div>
+              </div>
             </div>
             <div class="tab-pane" id="tab-topfiles">
               <div class="list-viewport" id="topfiles-list"></div>

@@ -509,6 +509,89 @@ body {
 }
 .list-row .mtime { text-align: right; color: var(--text-muted); font-size: 11.5px; }
 
+/* search pane */
+.search-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev-1);
+}
+.search-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev-2);
+  color: var(--text);
+  font-size: 13px;
+}
+.search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.search-filters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+}
+.search-minsize {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.search-minsize select {
+  background: var(--bg-elev-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+.search-header { grid-template-columns: 1fr 78px 78px; }
+.search-hint { padding: 14px 12px; }
+/* Search rows are not virtualized and show a two-line name/path, so they use
+   auto height rather than the fixed list ROW_HEIGHT. */
+.search-row {
+  grid-template-columns: 1fr 78px 78px;
+  height: auto;
+  min-height: 38px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+  align-items: center;
+}
+.search-row .col-name {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.search-row .row-icon { flex: none; }
+.search-row .search-name {
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: none;
+  max-width: 45%;
+}
+.search-row .search-path {
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;          /* keep the meaningful tail of long paths visible */
+  text-align: left;
+  min-width: 0;
+  flex: 1;
+}
+
 /* status bar */
 .status {
   display: flex;
