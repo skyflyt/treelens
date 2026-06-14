@@ -171,6 +171,7 @@ async function switchToTab(id: number) {
   (elJunkBtn as HTMLButtonElement).disabled = state.currentRoot === null;
   (elExportBtn as HTMLButtonElement).disabled = state.currentRoot === null;
   (elDupesBtn as HTMLButtonElement).disabled = state.currentRoot === null;
+  (elSaveScanBtn as HTMLButtonElement).disabled = state.scanRoot === null;
 }
 
 async function newTab() {
@@ -219,6 +220,8 @@ const elNewFileBtn = $("#new-file-btn");
 const elJunkBtn = $("#junk-btn");
 const elExportBtn = $("#export-btn");
 const elDupesBtn = $("#dupes-btn");
+const elSaveScanBtn = $("#save-scan-btn");
+const elOpenScanBtn = $("#open-scan-btn");
 const elModeAlloc = $("#mode-allocated");
 const elModeLogical = $("#mode-logical");
 const elHeatBtn = $("#heat-btn");
@@ -305,6 +308,8 @@ const treemap = new Treemap(
   elDupesBtn.addEventListener("click", () => {
     if (state.currentRoot !== null) runDuplicateFinder(state.currentRoot);
   });
+  elSaveScanBtn.addEventListener("click", () => saveCurrentScan());
+  elOpenScanBtn.addEventListener("click", () => openSavedScan());
   elScanCancel.addEventListener("click", () => {
     ipc.scanCancel().catch(() => {});
   });
@@ -619,6 +624,7 @@ async function handleScanComplete(p: {
   (elJunkBtn as HTMLButtonElement).disabled = false;
   (elExportBtn as HTMLButtonElement).disabled = false;
   (elDupesBtn as HTMLButtonElement).disabled = false;
+  (elSaveScanBtn as HTMLButtonElement).disabled = false;
   expandedIdxs.clear();
   // Name the active tab after the scanned folder's last path segment.
   const t = tabs.find((x) => x.id === activeTabId);
@@ -1230,6 +1236,59 @@ async function exportCurrentTree() {
     elStatusSummary.textContent = `Exported ${fmtCount(count)} rows to ${dest}`;
   } catch (e) {
     elStatusSummary.textContent = `Export failed: ${(e as Error)?.message ?? e}`;
+  }
+}
+
+// ---------- save / open scan ----------
+
+async function saveCurrentScan() {
+  if (state.scanRoot === null) return;
+  const base =
+    (state.scanRootPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "scan").replace(
+      /[^A-Za-z0-9._-]+/g,
+      "_",
+    ) || "scan";
+  try {
+    const { save: saveDialog } = await import("@tauri-apps/plugin-dialog");
+    const dest = await saveDialog({
+      defaultPath: `${base}.treelens`,
+      filters: [{ name: "Treelens scan", extensions: ["treelens"] }],
+    });
+    if (!dest) return;
+    pushLoading("Saving scan…");
+    let n: number;
+    try {
+      n = await ipc.saveScan(dest);
+    } finally {
+      popLoading();
+    }
+    toast(`Saved scan (${fmtCount(n)} nodes) to ${dest}`, "success");
+  } catch (e) {
+    toastErr("Save scan failed", e);
+  }
+}
+
+async function openSavedScan() {
+  try {
+    const { open: openDialog } = await import("@tauri-apps/plugin-dialog");
+    const picked = await openDialog({
+      multiple: false,
+      filters: [{ name: "Treelens scan", extensions: ["treelens"] }],
+    });
+    const path = Array.isArray(picked) ? picked[0] : picked;
+    if (!path) return;
+    pushLoading("Opening scan…");
+    let result;
+    try {
+      result = await ipc.openScan(path);
+    } finally {
+      popLoading();
+    }
+    // Render it exactly like a completed live scan in the active tab.
+    await handleScanComplete(result);
+    toast("Scan opened.", "success");
+  } catch (e) {
+    toastErr("Open scan failed", e);
   }
 }
 

@@ -481,6 +481,114 @@ fn extension_breakdown(
     })
 }
 
+const SCAN_MAGIC: &str = "treelens-scan";
+const SCAN_FORMAT_VERSION: u32 = 1;
+
+/// Borrowing view for serializing a scan without cloning the whole tree.
+#[derive(Serialize)]
+struct ScanSnapshotRef<'a> {
+    magic: &'a str,
+    version: u32,
+    scan_path: String,
+    tree: &'a Tree,
+}
+
+/// Owned form for deserializing a saved scan.
+#[derive(Deserialize)]
+struct ScanSnapshot {
+    magic: String,
+    version: u32,
+    scan_path: String,
+    tree: Tree,
+}
+
+/// Save the tab's scanned tree to `dest` as a `.treelens` snapshot so it can be
+/// reopened later without rescanning. Returns the node count written.
+#[tauri::command]
+fn save_scan(tab: u32, dest: String, state: State<'_, AppState>) -> Result<usize, CommandError> {
+    use std::io::BufWriter;
+    let tabs = state.tabs.read();
+    let td = tabs.get(&tab).ok_or_else(|| CommandError {
+        message: "no scan loaded".into(),
+    })?;
+    let snap = ScanSnapshotRef {
+        magic: SCAN_MAGIC,
+        version: SCAN_FORMAT_VERSION,
+        scan_path: td.scan_path.to_string_lossy().to_string(),
+        tree: &td.tree,
+    };
+    let file = std::fs::File::create(&dest).map_err(|e| CommandError {
+        message: format!("cannot create {dest}: {e}"),
+    })?;
+    serde_json::to_writer(BufWriter::new(file), &snap).map_err(|e| CommandError {
+        message: format!("write failed: {e}"),
+    })?;
+    Ok(td.tree.nodes.len())
+}
+
+/// Open a `.treelens` snapshot into tab `tab` and return the same payload a live
+/// scan completion produces, so the UI renders it identically.
+#[tauri::command]
+fn open_scan(
+    path: String,
+    tab: u32,
+    state: State<'_, AppState>,
+) -> Result<ScanCompletePayload, CommandError> {
+    use std::io::BufReader;
+    let file = std::fs::File::open(&path).map_err(|e| CommandError {
+        message: format!("cannot open {path}: {e}"),
+    })?;
+    let snap: ScanSnapshot = serde_json::from_reader(BufReader::new(file)).map_err(|e| {
+        CommandError {
+            message: format!("not a valid Treelens scan file: {e}"),
+        }
+    })?;
+    if snap.magic != SCAN_MAGIC {
+        return Err(CommandError {
+            message: "not a Treelens scan file".into(),
+        });
+    }
+    if snap.version > SCAN_FORMAT_VERSION {
+        return Err(CommandError {
+            message: format!(
+                "scan file is from a newer Treelens (format v{}); please update",
+                snap.version
+            ),
+        });
+    }
+    let tree = snap.tree;
+    let root_idx = tree.root;
+    if tree.nodes.is_empty() || root_idx as usize >= tree.nodes.len() {
+        return Err(CommandError {
+            message: "scan file is empty or corrupt".into(),
+        });
+    }
+    let root = &tree.nodes[root_idx as usize];
+    let bytes = root.allocated;
+    let files = root.file_count;
+    let dirs = root.dir_count;
+    let nodes = tree.nodes.len() as u32;
+    let scan_path = PathBuf::from(&snap.scan_path);
+    state.tabs.write().insert(
+        tab,
+        TabData {
+            tree,
+            scan_path: scan_path.clone(),
+        },
+    );
+    Ok(ScanCompletePayload {
+        tab,
+        root_idx,
+        nodes,
+        bytes,
+        files,
+        dirs,
+        errors: 0,
+        duration_ms: 0,
+        root_path: snap.scan_path,
+    })
+}
+
 /// Export the subtree under `root` to `dest` as CSV or JSON. Walks iteratively
 /// and streams rows to a buffered writer so even a whole-drive tree exports
 /// without building a giant in-memory string. Returns the number of rows written.
@@ -1544,6 +1652,8 @@ pub fn run() {
             node_summary,
             search,
             extension_breakdown,
+            save_scan,
+            open_scan,
             export_tree,
             find_duplicates,
             load_config,
@@ -1613,5 +1723,54 @@ mod tests {
         assert_eq!(parse_search_kind("dirs"), SearchKind::DirsOnly);
         assert_eq!(parse_search_kind("all"), SearchKind::All);
         assert_eq!(parse_search_kind("whatever"), SearchKind::All);
+    }
+
+    #[test]
+    fn scan_snapshot_round_trips() {
+        // Build a small tree, serialize via the save-side struct, deserialize via
+        // the open-side struct, and confirm topology + magic/version survive.
+        fn rec(idx: u32, name: &str, parent: u32, size: u64, is_dir: bool) -> scanner::Record {
+            scanner::Record {
+                idx,
+                name: name.into(),
+                parent,
+                logical: if is_dir { 0 } else { size },
+                allocated: if is_dir { 0 } else { (size + 4095) & !4095 },
+                mtime: 1_700_000_000,
+                flags: if is_dir { scanner::FLAG_DIR } else { 0 },
+            }
+        }
+        let tree = Tree::build(vec![
+            rec(0, "root", u32::MAX, 0, true),
+            rec(1, "a.bin", 0, 100, false),
+            rec(2, "sub", 0, 0, true),
+            rec(3, "b.bin", 2, 300, false),
+        ]);
+        let snap = ScanSnapshotRef {
+            magic: SCAN_MAGIC,
+            version: SCAN_FORMAT_VERSION,
+            scan_path: "C:\\data".into(),
+            tree: &tree,
+        };
+        let json = serde_json::to_string(&snap).unwrap();
+        let back: ScanSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.magic, SCAN_MAGIC);
+        assert_eq!(back.version, SCAN_FORMAT_VERSION);
+        assert_eq!(back.scan_path, "C:\\data");
+        assert_eq!(back.tree.nodes.len(), tree.nodes.len());
+        assert_eq!(back.tree.root, tree.root);
+        // Root logical aggregates 100 + 300 in both.
+        assert_eq!(
+            back.tree.nodes[back.tree.root as usize].logical,
+            tree.nodes[tree.root as usize].logical
+        );
+        assert_eq!(back.tree.nodes[back.tree.root as usize].logical, 400);
+    }
+
+    #[test]
+    fn open_scan_rejects_wrong_magic() {
+        let bad = r#"{"magic":"not-treelens","version":1,"scan_path":"x","tree":{"nodes":[],"root":0}}"#;
+        let snap: ScanSnapshot = serde_json::from_str(bad).unwrap();
+        assert_ne!(snap.magic, SCAN_MAGIC);
     }
 }

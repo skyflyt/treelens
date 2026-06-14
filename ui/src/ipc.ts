@@ -337,6 +337,12 @@ export const ipc = {
   exportTree(root: number, format: "csv" | "json", dest: string) {
     return invoke<number>("export_tree", { tab: activeTab, root, format, dest });
   },
+  saveScan(dest: string) {
+    return invoke<number>("save_scan", { tab: activeTab, dest });
+  },
+  openScan(path: string) {
+    return invoke<ScanComplete>("open_scan", { path, tab: activeTab });
+  },
   findDuplicates(root: number, minSize: number) {
     return invoke<DupeReport>("find_duplicates", { tab: activeTab, root, minSize });
   },
