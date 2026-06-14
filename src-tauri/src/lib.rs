@@ -571,11 +571,10 @@ fn open_scan(
     let file = std::fs::File::open(&path).map_err(|e| CommandError {
         message: format!("cannot open {path}: {e}"),
     })?;
-    let snap: ScanSnapshot = serde_json::from_reader(BufReader::new(file)).map_err(|e| {
-        CommandError {
+    let snap: ScanSnapshot =
+        serde_json::from_reader(BufReader::new(file)).map_err(|e| CommandError {
             message: format!("not a valid Treelens scan file: {e}"),
-        }
-    })?;
+        })?;
     if snap.magic != SCAN_MAGIC {
         return Err(CommandError {
             message: "not a Treelens scan file".into(),
@@ -1808,7 +1807,8 @@ mod tests {
 
     #[test]
     fn open_scan_rejects_wrong_magic() {
-        let bad = r#"{"magic":"not-treelens","version":1,"scan_path":"x","tree":{"nodes":[],"root":0}}"#;
+        let bad =
+            r#"{"magic":"not-treelens","version":1,"scan_path":"x","tree":{"nodes":[],"root":0}}"#;
         let snap: ScanSnapshot = serde_json::from_str(bad).unwrap();
         assert_ne!(snap.magic, SCAN_MAGIC);
     }

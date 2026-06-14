@@ -36,6 +36,20 @@ Grab the latest portable EXE from [Releases](https://github.com/skyflyt/treelens
 - **Admin banner** — runs without admin (some files hidden) and offers a one-click elevated relaunch for full visibility. File operations work identically in both modes.
 - **Light + dark theme** following OS by default; manual override is persisted.
 
+## New in v0.4 – v0.5
+
+- **Search** (Search tab / <kbd>Ctrl</kbd>+<kbd>F</kbd>) — find files & folders anywhere under the current view by name, with size and files/dirs-only filters; results show full paths and jump you to the item.
+- **Live filter** — an instant client-side filter box over the current folder's contents.
+- **Click-to-sort columns** (Name / Size / % / Modified) with a direction indicator.
+- **File-type breakdown** (Types tab) — sizes and counts aggregated by extension, with inline bars.
+- **Duplicate finder** — byte-identical files via a size → 4 KiB-prefix-hash → full-hash funnel, grouped most-reclaimable-first, with one-click "recycle redundant copies."
+- **Export** the current subtree to **CSV or JSON** (streamed, scales to whole drives).
+- **Save & open scans** — write a scan to a portable `.treelens` snapshot and reopen it later without rescanning.
+- **Scan exclusions** — glob patterns (`node_modules`, `*.tmp`, `C:\Windows\*`) skipped at scan time; edited in Settings.
+- **Settings panel** — theme, default size mode, treemap depth, duplicate threshold, and exclusions, all persisted to a portable config file.
+- **Recent scans** menu, **treemap depth control + color legend + keyboard navigation**, and an **inaccessible-items report** (a status-bar pill listing what a scan couldn't read).
+- **Toasts + keyboard-shortcut help** (<kbd>?</kbd> / <kbd>F1</kbd>) and accessibility passes throughout.
+
 ## Why
 
 Finding what's eating your disk on Windows used to be a one-click answer with simple desktop tools. The free options have aged unevenly — single-threaded scanners that take twenty minutes on modern NVMe, closed-source binaries with restrictive personal-use-only licenses, abandoned projects, and tools that limit what they'll show you without an upgrade.
@@ -48,11 +62,10 @@ Treelens is the answer I wanted: a parallel scanner, a visual treemap, a familia
 | --- | --- |
 | ✅ v0.2 | File explorer ops (create / rename / open / recycle), virtualized tree to file level |
 | ✅ v0.3 | Tabs, keyboard navigation, checksums, file compare, steganography (detect/extract/embed) |
-| v0.4 | NTFS MFT fast path (FSCTL_ENUM_USN_DATA) for the 10× scan speedup |
-| v0.4 | Truly portable `treelens.config.json` next to the exe |
-| v0.x | Search / filter, CSV/JSON export, exclude patterns, multi-drive overview |
-| v1.x | Scan history / snapshots, "what changed since last scan" diff |
-| v2.x | Duplicate finder (size-prefilter → hash) |
+| ✅ v0.4 | Correctness/perf hardening, portable `treelens.config.json`, search/filter, CSV/JSON export, duplicate finder |
+| ✅ v0.5 | Scan exclusions, file-type breakdown, save/open scan snapshots, settings panel, recents, treemap depth/legend/keyboard nav, inaccessible-path reporting |
+| v0.x | NTFS MFT fast path (FSCTL_ENUM_USN_DATA) for the 10× scan speedup |
+| v0.x | Multi-drive overview, "what changed since last scan" diff |
 
 Full plan: [PLAN.md](PLAN.md).
 
@@ -64,7 +77,7 @@ Click _More info → Run anyway._ Source is right here; `SHA256SUMS.txt` lets yo
 ## Build from source
 
 ```powershell
-# Prerequisites: Rust (stable, MSVC toolchain) + Node 20+ + Windows 10/11 with WebView2
+# Prerequisites: Rust (stable, MSVC toolchain) + Node 22+ + Windows 10/11 with WebView2
 git clone https://github.com/skyflyt/treelens.git
 cd treelens
 npm install

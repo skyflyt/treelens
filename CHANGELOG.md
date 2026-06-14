@@ -4,6 +4,41 @@ All notable changes to Treelens are documented here.
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning is [SemVer](https://semver.org/) (0.x while pre-1.0).
 
+## [0.5.0] — 2026-06-13
+
+A second ten-sprint pass focused on features and usability.
+
+### Added
+- **Scan exclusions** — glob patterns (name globs like `node_modules` / `*.tmp`,
+  or full-path globs like `C:\Windows\*`) are skipped at scan time; edited in
+  the new Settings panel and persisted.
+- **File-type breakdown** (Types tab) — size and count aggregated by extension
+  with inline bars.
+- **Save & open scan snapshots** — write a scan to a portable `.treelens` file
+  and reopen it later without rescanning.
+- **Live Contents filter** — an instant, client-side name filter over the
+  current folder.
+- **Treemap depth control + color legend + keyboard navigation** — choose how
+  many levels render, read the type/age color key, and move/drill with the
+  arrow keys + Enter.
+- **Recent scans** menu next to the Scan button.
+- **Inaccessible-items reporting** — a status-bar pill shows how many entries a
+  scan couldn't read and lists a sample of the actual paths.
+- **Settings panel** — theme, default size mode, treemap depth, duplicate-finder
+  minimum size, and exclusions, all saved to the portable config file.
+
+### Changed
+- The duplicate finder's minimum size is now configurable (was a hardcoded
+  4 KiB).
+- The Contents / Top-files / Top-folders lists use event delegation instead of
+  per-row listeners.
+
+### Tooling / tests
+- New scanner glob + exclusion tests, fileops delete/empty-dir tests, tree
+  extension-breakdown + search tests, and a scan-snapshot round-trip test.
+
+[0.5.0]: https://github.com/skyflyt/treelens/releases/tag/v0.5.0
+
 ## [0.4.0] — 2026-06-13
 
 A hardening + features release from a full audit and deep-dive test, delivered

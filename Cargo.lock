@@ -34,7 +34,7 @@ dependencies = [
 
 [[package]]
 name = "analysis"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "crc32fast",
@@ -1113,7 +1113,7 @@ dependencies = [
 
 [[package]]
 name = "fileops"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -3083,7 +3083,7 @@ dependencies = [
 
 [[package]]
 name = "scanner"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -4287,7 +4287,7 @@ dependencies = [
 
 [[package]]
 name = "tree"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "criterion",
@@ -4298,7 +4298,7 @@ dependencies = [
 
 [[package]]
 name = "treelens"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "analysis",
  "anyhow",

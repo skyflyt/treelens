@@ -65,7 +65,9 @@ pub enum ScanEvent {
     Progress(Progress),
     /// A capped sample of paths that couldn't be read during the scan.
     Errors(Vec<String>),
-    Done { duration_ms: u64 },
+    Done {
+        duration_ms: u64,
+    },
     Cancelled,
 }
 
@@ -744,7 +746,10 @@ mod tests {
         let names: Vec<&str> = recs.iter().map(|r| r.name.as_str()).collect();
         assert!(names.contains(&"keep"));
         assert!(names.contains(&"a.txt"));
-        assert!(!names.contains(&"skipme"), "path-glob should drop skipme dir");
+        assert!(
+            !names.contains(&"skipme"),
+            "path-glob should drop skipme dir"
+        );
         assert!(!names.contains(&"b.txt"));
         assert_eq!(recs.iter().map(|r| r.logical).sum::<u64>(), 10);
     }
