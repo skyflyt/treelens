@@ -51,6 +51,8 @@ interface UiState {
   dupeMinSize: number;
   /** Side-panel width in px (persisted). */
   sideWidth: number;
+  /** List row density. */
+  density: "comfortable" | "compact";
 }
 
 const state: UiState = {
@@ -73,6 +75,7 @@ const state: UiState = {
   recents: [],
   dupeMinSize: 4096,
   sideWidth: 460,
+  density: "comfortable",
 };
 
 function prefersDark(): boolean {
@@ -1154,6 +1157,12 @@ function openSettings() {
         <label class="set-row"><span>Treemap depth</span>
           <input type="number" id="set-depth" min="2" max="6" value="${state.treemapDepth}" />
         </label>
+        <label class="set-row"><span>Row density</span>
+          <select id="set-density">
+            <option value="comfortable" ${state.density === "comfortable" ? "selected" : ""}>Comfortable</option>
+            <option value="compact" ${state.density === "compact" ? "selected" : ""}>Compact</option>
+          </select>
+        </label>
         <label class="set-row"><span>Duplicate finder — minimum size</span>
           <select id="set-dupemin">
             ${dupOpts.map(([v, t]) => `<option value="${v}" ${state.dupeMinSize === v ? "selected" : ""}>${t}</option>`).join("")}
@@ -1213,6 +1222,12 @@ function openSettings() {
   });
   backdrop.querySelector("#set-dupemin")?.addEventListener("change", (e) => {
     state.dupeMinSize = Number((e.target as HTMLSelectElement).value) || 0;
+    saveConfig();
+  });
+  backdrop.querySelector("#set-density")?.addEventListener("change", (e) => {
+    const v = (e.target as HTMLSelectElement).value;
+    state.density = v === "compact" ? "compact" : "comfortable";
+    applyDensity();
     saveConfig();
   });
 }
@@ -1461,8 +1476,16 @@ function noteRow(row: DirRow) {
 /** Flat tree-with-expansion: each row carries the depth it should indent at. */
 interface FlatRow { row: DirRow; depth: number; }
 
-const ROW_HEIGHT = 26;       // px; must match .list-row height in CSS
+let ROW_HEIGHT = 26;         // px; kept in sync with the CSS --row-h variable
 const WINDOW_BUFFER = 8;     // extra rows above/below the viewport
+
+/** Apply the row-density setting: updates ROW_HEIGHT (used by the virtual
+ *  scroller's math) and the CSS --row-h, then re-renders the visible window. */
+function applyDensity() {
+  ROW_HEIGHT = state.density === "compact" ? 22 : 26;
+  document.documentElement.style.setProperty("--row-h", `${ROW_HEIGHT}px`);
+  if (state.currentRoot !== null) applyContentsFilter(true);
+}
 
 /** The complete flattened list for the current view (root's children + any
  *  inline-expanded subtrees), before the Contents filter is applied. */
@@ -2960,8 +2983,10 @@ function applyConfig(raw: string | null) {
         state.dupeMinSize = Math.round(v.dupeMinSize);
       if (typeof v.sideWidth === "number")
         state.sideWidth = Math.min(900, Math.max(280, Math.round(v.sideWidth)));
+      if (v.density === "compact" || v.density === "comfortable") state.density = v.density;
     }
     applySideWidth();
+    applyDensity();
   } catch {}
   // Apply visible state to controls.
   elModeAlloc.classList.toggle("active", state.sizeMode === "allocated");
@@ -2999,6 +3024,7 @@ function saveConfig() {
     recents: state.recents,
     dupeMinSize: state.dupeMinSize,
     sideWidth: state.sideWidth,
+    density: state.density,
   };
   const json = JSON.stringify(v);
   // Fast local cache (sync) + durable portable file (async, best-effort).

@@ -576,7 +576,7 @@ body.resizing * { cursor: col-resize !important; }
   align-items: center;
   gap: 8px;
   padding: 0 10px;
-  height: 26px;          /* must match ROW_HEIGHT in main.ts */
+  height: var(--row-h, 26px);   /* kept in sync with ROW_HEIGHT in main.ts */
   box-sizing: border-box;
   border-bottom: 1px solid var(--bg-elev-2);
   cursor: pointer;
@@ -891,6 +891,23 @@ body.resizing * { cursor: col-resize !important; }
   font-size: 11.5px;
   padding-left: 4px;
 }
+
+/* keyboard focus rings (a11y) — only for keyboard users, not mouse clicks */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+.btn:focus-visible,
+.tab:focus-visible,
+.crumb:focus-visible,
+.drive-card:focus-visible,
+.list-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+/* Mouse clicks shouldn't leave a lingering ring. */
+:focus:not(:focus-visible) { outline: none; }
 
 /* selection action bar */
 .selection-bar {
