@@ -13,9 +13,12 @@ versioning is [SemVer](https://semver.org/) (0.x while pre-1.0).
   selects, double-click drills in — and expand stays a Contents-only feature.
 
 ### CI
-- Pinned the Windows runners to `windows-2022` after GitHub's `windows-latest` →
-  `windows-2025` migration started failing the clippy step on the new image
-  (identical toolchain; clean locally).
+- Fixed the Rust job's clippy/bench steps failing on every version-bump commit:
+  `cargo clippy --workspace` was linting the `treelens` crate, whose
+  `generate_context!` needs `ui/dist` (not built in that job), so on a cold
+  cache the macro panicked. clippy/test/bench now exclude `treelens` in the
+  library job and lint it in the `app` job after the UI is built. Also pinned
+  the Windows runners to `windows-2022`.
 
 [0.6.3]: https://github.com/skyflyt/treelens/releases/tag/v0.6.3
 

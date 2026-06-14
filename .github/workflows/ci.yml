@@ -47,17 +47,18 @@ jobs:
       - name: fmt
         run: cargo fmt --all -- --check
 
-      - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      # The `treelens` (Tauri) crate is excluded from every cargo step in this
+      # job: its `generate_context!` requires ../ui/dist, which this job never
+      # builds. On a cold cache it would recompile and the macro panics. clippy +
+      # tests + --selftest for treelens run in the `app` job after the UI build.
+      - name: clippy (library crates)
+        run: cargo clippy --workspace --exclude treelens --all-targets -- -D warnings
 
-      # The `treelens` (Tauri) crate is excluded here because its
-      # generate_context! needs ../ui/dist, which doesn't exist in this job.
-      # Its tests + --selftest run in the `app` job below after the UI is built.
       - name: test (library crates)
         run: cargo test --workspace --exclude treelens
 
       - name: bench compile check
-        run: cargo bench --workspace --no-run
+        run: cargo bench --workspace --exclude treelens --no-run
 
   ui:
     name: UI typecheck + build
@@ -93,6 +94,9 @@ jobs:
       # Build the frontend first so generate_context! can embed ui/dist.
       - name: Build UI
         run: npm run build
+
+      - name: clippy (Tauri crate)
+        run: cargo clippy -p treelens --all-targets -- -D warnings
 
       - name: Test Tauri crate
         run: cargo test -p treelens
