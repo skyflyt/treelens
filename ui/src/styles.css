@@ -869,6 +869,23 @@ body {
   font-variant-numeric: tabular-nums;
 }
 .status-spacer { flex: 1; }
+.status-pill {
+  background: color-mix(in srgb, #d6a206 18%, transparent);
+  border: 1px solid color-mix(in srgb, #d6a206 55%, transparent);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.status-pill:hover { background: color-mix(in srgb, #d6a206 30%, transparent); }
+.se-row {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  word-break: break-all;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--bg-elev-2);
+}
 .status-loading {
   display: inline-flex;
   align-items: center;

@@ -125,6 +125,34 @@ fn scan_cancel(state: State<'_, AppState>) -> Result<(), CommandError> {
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+struct ScanErrorsReport {
+    /// Total inaccessible entries the last scan hit (from progress counters).
+    count: u64,
+    /// A capped sample of the actual paths that couldn't be read.
+    sample: Vec<String>,
+    /// True if more errors occurred than the sample holds.
+    truncated: bool,
+}
+
+/// Return the inaccessible-path sample + count from the most recent scan.
+#[tauri::command]
+fn scan_errors(state: State<'_, AppState>) -> Result<ScanErrorsReport, CommandError> {
+    let count = state
+        .last_progress
+        .lock()
+        .as_ref()
+        .map(|p| p.errors)
+        .unwrap_or(0);
+    let sample = state.last_errors.lock().clone();
+    let truncated = count as usize > sample.len();
+    Ok(ScanErrorsReport {
+        count,
+        sample,
+        truncated,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn collect_scan(
     app: AppHandle,
@@ -139,6 +167,8 @@ fn collect_scan(
     let mut last_progress: Option<scanner::Progress> = None;
     let mut cancelled = false;
     let mut duration_ms: u64 = 0;
+    // Reset the inaccessible-path sample for this fresh scan.
+    *state.last_errors.lock() = Vec::new();
 
     // Drain records and events concurrently.
     loop {
@@ -160,6 +190,9 @@ fn collect_scan(
                         };
                         let _ = app.emit("scan:progress", payload.clone());
                         last_progress = Some(p);
+                    }
+                    ScanEvent::Errors(paths) => {
+                        *state.last_errors.lock() = paths;
                     }
                     ScanEvent::Cancelled => { cancelled = true; }
                     ScanEvent::Done { duration_ms: d } => { duration_ms = d; }
@@ -1382,6 +1415,10 @@ pub struct AppStateInner {
     /// only writer is the scan collector replacing one tab's tree at scan end.
     pub tabs: RwLock<std::collections::HashMap<u32, TabData>>,
     pub last_progress: Mutex<Option<scanner::Progress>>,
+    /// Sample of paths the most recent scan couldn't read (permission denied,
+    /// locked, etc.), capped by the scanner. Surfaced via the `scan_errors`
+    /// command so the user can see *what* was skipped, not just a count.
+    pub last_errors: Mutex<Vec<String>>,
 }
 
 impl AppStateInner {
@@ -1390,6 +1427,7 @@ impl AppStateInner {
             scan: Mutex::new(None),
             tabs: RwLock::new(std::collections::HashMap::new()),
             last_progress: Mutex::new(None),
+            last_errors: Mutex::new(Vec::new()),
         })
     }
 }
@@ -1643,6 +1681,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan_start,
             scan_cancel,
+            scan_errors,
             close_tab,
             list_dir,
             child_count,

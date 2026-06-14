@@ -120,6 +120,12 @@ export interface ScanCancelled {
   tab: number;
 }
 
+export interface ScanErrorsReport {
+  count: number;
+  sample: string[];
+  truncated: boolean;
+}
+
 export interface TopN {
   files: DirRow[];
   dirs: DirRow[];
@@ -226,6 +232,9 @@ export const ipc = {
   },
   scanCancel() {
     return invoke<void>("scan_cancel");
+  },
+  scanErrors() {
+    return invoke<ScanErrorsReport>("scan_errors");
   },
   closeTab(tab: number) {
     return invoke<void>("close_tab", { tab });

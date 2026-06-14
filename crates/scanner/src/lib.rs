@@ -60,12 +60,17 @@ pub struct Progress {
     pub elapsed_ms: u64,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ScanEvent {
     Progress(Progress),
+    /// A capped sample of paths that couldn't be read during the scan.
+    Errors(Vec<String>),
     Done { duration_ms: u64 },
     Cancelled,
 }
+
+/// Maximum number of inaccessible-path samples retained per scan.
+pub const MAX_ERROR_SAMPLES: usize = 1000;
 
 #[derive(Debug, Clone)]
 pub struct ScanOptions {
@@ -273,6 +278,8 @@ pub fn scan(
     let opts = Arc::new(opts);
 
     let last_progress = Arc::new(parking_lot::Mutex::new(Instant::now()));
+    // Shared, capped sample of inaccessible paths.
+    let err_paths = Arc::new(Mutex::new(Vec::<String>::new()));
 
     let mut handles = Vec::with_capacity(opts.threads);
     for _ in 0..opts.threads {
@@ -284,6 +291,7 @@ pub fn scan(
         let event_tx = event_tx.clone();
         let cancel = cancel.clone();
         let last_progress = last_progress.clone();
+        let err_paths = err_paths.clone();
         let start_clone = start;
         handles.push(thread::spawn(move || {
             worker(
@@ -295,6 +303,7 @@ pub fn scan(
                 event_tx,
                 cancel,
                 last_progress,
+                err_paths,
                 start_clone,
             )
         }));
@@ -315,6 +324,10 @@ pub fn scan(
             errors: stats.errors.load(Ordering::Relaxed),
             elapsed_ms: duration_ms,
         }));
+        let samples = std::mem::take(&mut *err_paths.lock());
+        if !samples.is_empty() {
+            let _ = event_tx.send(ScanEvent::Errors(samples));
+        }
         let _ = event_tx.send(ScanEvent::Done { duration_ms });
     }
 }
@@ -337,10 +350,18 @@ fn worker(
     event_tx: Sender<ScanEvent>,
     cancel: Cancel,
     last_progress: Arc<parking_lot::Mutex<Instant>>,
+    err_paths: Arc<Mutex<Vec<String>>>,
     start: Instant,
 ) {
     let excluder = Excluder::new(&opts.excludes);
     let has_excludes = !excluder.is_empty();
+    // Record a sample inaccessible path (capped), cheaply skipping once full.
+    let note_err = |p: String| {
+        let mut v = err_paths.lock();
+        if v.len() < MAX_ERROR_SAMPLES {
+            v.push(p);
+        }
+    };
     loop {
         if cancel.is_cancelled() {
             return;
@@ -368,6 +389,7 @@ fn worker(
                     }
                     let Ok(ent) = ent else {
                         stats.errors.fetch_add(1, Ordering::Relaxed);
+                        note_err(dir_path.to_string_lossy().to_string());
                         continue;
                     };
                     let name = ent.file_name().to_string_lossy().to_string();
@@ -383,6 +405,7 @@ fn worker(
                         Ok(m) => m,
                         Err(_) => {
                             stats.errors.fetch_add(1, Ordering::Relaxed);
+                            note_err(dir_path.join(&name).to_string_lossy().to_string());
                             continue;
                         }
                     };
@@ -479,9 +502,9 @@ fn worker(
             }
             Err(_) => {
                 stats.errors.fetch_add(1, Ordering::Relaxed);
-                // Mark the directory itself as unscannable by emitting a flag-update record?
-                // Simpler v0.1: just count the error. The directory still appears in the tree
-                // with whatever size aggregation children contribute (zero here).
+                note_err(dir_path.to_string_lossy().to_string());
+                // The directory still appears in the tree with whatever size its
+                // children contribute (zero here); we just couldn't list it.
             }
         }
 

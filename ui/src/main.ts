@@ -180,6 +180,8 @@ async function switchToTab(id: number) {
   (elExportBtn as HTMLButtonElement).disabled = state.currentRoot === null;
   (elDupesBtn as HTMLButtonElement).disabled = state.currentRoot === null;
   (elSaveScanBtn as HTMLButtonElement).disabled = state.scanRoot === null;
+  // The errors pill reflects the last scan globally; clear it on tab switch.
+  elScanErrorsPill.hidden = true;
   updateTreemapChrome();
 }
 
@@ -262,6 +264,7 @@ const elSearchList = $("#search-list");
 const elSearchMinSize = $<HTMLSelectElement>("#search-minsize");
 const elTypesList = $("#types-list");
 const elContentsFilter = $<HTMLInputElement>("#contents-filter");
+const elScanErrorsPill = $("#scan-errors-pill");
 const elDepthCtl = $("#treemap-depth-ctl");
 const elDepthVal = $("#depth-val");
 const elTreemapLegend = $("#treemap-legend");
@@ -389,6 +392,7 @@ const treemap = new Treemap(
   setupSearch();
   setupColumnSort();
   $("#help-btn").addEventListener("click", () => toggleHelp());
+  elScanErrorsPill.addEventListener("click", () => showScanErrors());
 
   // Treemap depth control.
   $("#depth-dec").addEventListener("click", () => setTreemapDepth(state.treemapDepth - 1));
@@ -583,6 +587,7 @@ function handleScanStalled(tab: number) {
 function startScan(rootPath: string) {
   const tab = activeTabId;
   pushRecent(rootPath);
+  elScanErrorsPill.hidden = true;
   state.scanning = true;
   state.scanRoot = null;
   state.currentRoot = null;
@@ -633,6 +638,7 @@ async function handleScanComplete(p: {
   files: number;
   dirs: number;
   bytes: number;
+  errors?: number;
   duration_ms: number;
   root_path: string;
 }) {
@@ -686,6 +692,66 @@ async function handleScanComplete(p: {
   elStatusSummary.textContent =
     `${fmtCount(p.files)} files · ${fmtCount(p.dirs)} folders · ${fmtBytes(p.bytes)} · scanned in ${fmtDuration(p.duration_ms)}`;
   updateTreemapChrome();
+  updateScanErrorsPill(p.errors ?? 0);
+}
+
+/** Show/refresh the status-bar pill counting inaccessible items, if any. */
+function updateScanErrorsPill(errors: number) {
+  if (errors > 0) {
+    elScanErrorsPill.textContent = `⚠ ${fmtCount(errors)} inaccessible`;
+    elScanErrorsPill.hidden = false;
+  } else {
+    elScanErrorsPill.hidden = true;
+  }
+}
+
+async function showScanErrors() {
+  let report;
+  try {
+    report = await ipc.scanErrors();
+  } catch (e) {
+    toastErr("Couldn't load scan errors", e);
+    return;
+  }
+  if (report.count === 0) {
+    toast("No inaccessible items in the last scan.", "info");
+    return;
+  }
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  const note = report.truncated
+    ? ` (showing first ${report.sample.length.toLocaleString()})`
+    : "";
+  backdrop.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Inaccessible items">
+      <div class="modal-head">
+        <div class="modal-title">${report.count.toLocaleString()} inaccessible items${note}</div>
+        <button class="btn ghost small" id="se-close" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body" style="max-height:55vh; min-width:620px"></div>
+      <div class="modal-foot">
+        <span class="muted small" style="margin-right:auto">Usually permission-protected or locked. Relaunch as admin to see more.</span>
+        <button class="btn" id="se-ok">Close</button>
+      </div>
+    </div>`;
+  const body = backdrop.querySelector(".modal-body")!;
+  if (report.sample.length === 0) {
+    body.innerHTML = '<div class="search-hint muted small">No path samples were captured.</div>';
+  } else {
+    for (const p of report.sample) {
+      const row = document.createElement("div");
+      row.className = "se-row";
+      row.textContent = p;
+      body.appendChild(row);
+    }
+  }
+  document.body.appendChild(backdrop);
+  const close = () => backdrop.remove();
+  backdrop.querySelector("#se-close")?.addEventListener("click", close);
+  backdrop.querySelector("#se-ok")?.addEventListener("click", close);
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) close();
+  });
 }
 
 function handleScanCancelled(p: { tab: number }) {
