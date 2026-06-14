@@ -1,7 +1,7 @@
 {
   "name": "treelens",
   "private": true,
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Free, open-source disk-space visualizer for Windows.",
   "type": "module",
   "scripts": {

@@ -4,6 +4,15 @@ All notable changes to Treelens are documented here.
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning is [SemVer](https://semver.org/) (0.x while pre-1.0).
 
+## [0.6.1] — 2026-06-14
+
+### Fixed
+- The empty-state ("pick a drive") card could stay pinned over the treemap
+  after opening a new tab, cancelling the picker, and closing that tab:
+  switching to a scanned tab rendered its treemap but never hid the overlay.
+
+[0.6.1]: https://github.com/skyflyt/treelens/releases/tag/v0.6.1
+
 ## [0.6.0] — 2026-06-13
 
 A UI/UX-focused pass (ten sprints) polishing the whole experience.
