@@ -1728,13 +1728,13 @@ async function refreshTopN(seq: number = drillSeq) {
   const ff = document.createDocumentFragment();
   for (const r of t.files) {
     noteRow(r);
-    ff.appendChild(renderRow(r));
+    ff.appendChild(renderRow(r, 0, true));
   }
   elTopFilesList.appendChild(ff);
   const fd = document.createDocumentFragment();
   for (const r of t.dirs) {
     noteRow(r);
-    fd.appendChild(renderRow(r));
+    fd.appendChild(renderRow(r, 0, true)); // flat: ranked list, no inline expand
   }
   elTopDirsList.appendChild(fd);
 }
@@ -2097,7 +2097,7 @@ async function revealSearchHit(h: SearchHit) {
     .forEach((x) => x.classList.toggle("active", x.id === "tab-contents"));
 }
 
-function renderRow(row: DirRow, depth: number = 0): HTMLElement {
+function renderRow(row: DirRow, depth: number = 0, flat: boolean = false): HTMLElement {
   const el = document.createElement("div");
   el.className =
     "list-row" +
@@ -2108,10 +2108,11 @@ function renderRow(row: DirRow, depth: number = 0): HTMLElement {
     el.style.paddingLeft = `${10 + 16 * depth}px`;
   }
 
-  // Real folders get an expand/collapse chevron (separate click target from the
-  // row body). Reparse points (junctions, app-exec links) are leaves to us —
-  // they get a different glyph and no chevron handler. Files get a plain dot.
-  const expandable = row.is_dir && !row.is_reparse;
+  // In the Contents tree, real folders get an expand/collapse chevron. In the
+  // flat ranked lists (Top files / Top folders) inline expansion is meaningless,
+  // so folders show a plain folder glyph instead — double-click still drills in.
+  // Reparse points (junctions, app-exec links) are leaves; files get a dot.
+  const expandable = row.is_dir && !row.is_reparse && !flat;
   const isExpanded = expandedIdxs.has(row.idx);
   let iconHtml: string;
   if (expandable) {
@@ -2119,6 +2120,8 @@ function renderRow(row: DirRow, depth: number = 0): HTMLElement {
     iconHtml = `<span class="chev" title="${isExpanded ? "Collapse" : "Expand"}">${chev}</span>`;
   } else if (row.is_reparse) {
     iconHtml = `<span class="icon">↪</span>`;
+  } else if (row.is_dir) {
+    iconHtml = `<span class="icon">📁</span>`;
   } else {
     iconHtml = `<span class="icon">·</span>`;
   }
@@ -2149,12 +2152,16 @@ function rowIdxFromEvent(e: Event): number | null {
  *  sets, matching the old per-row behavior exactly. */
 function setupRowDelegation() {
   for (const list of [elDirList, elTopFilesList, elTopDirsList]) {
+    // Inline expand is a Contents-tree feature only; the Top files / Top folders
+    // lists are flat rankings (re-rendered by refreshTopN, not refreshDirList),
+    // so expanding there would silently mutate the hidden Contents tree.
+    const isContents = list === elDirList;
     list.addEventListener("click", (e) => {
       const idx = rowIdxFromEvent(e);
       if (idx === null) return;
       e.stopPropagation();
       // Chevron → toggle inline expansion without selecting/drilling.
-      if ((e.target as HTMLElement).closest(".chev")) {
+      if (isContents && (e.target as HTMLElement).closest(".chev")) {
         toggleExpand(idx);
         return;
       }
@@ -2168,7 +2175,9 @@ function setupRowDelegation() {
       pendingRowClick = window.setTimeout(() => {
         pendingRowClick = undefined;
         selectNode(idx);
-        if (nameIsDir(idx) && !reparseIdxs.has(idx)) toggleExpand(idx);
+        // Only the Contents tree expands in place; flat lists just select
+        // (double-click still drills into a folder).
+        if (isContents && nameIsDir(idx) && !reparseIdxs.has(idx)) toggleExpand(idx);
       }, DOUBLE_CLICK_MS);
     });
     list.addEventListener("dblclick", (e) => {
