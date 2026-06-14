@@ -312,15 +312,57 @@ body {
 /* main split */
 .main {
   display: grid;
-  grid-template-columns: 1fr 460px;
+  grid-template-columns: 1fr var(--side-w, 460px);
   min-height: 0;
 }
+body.resizing { user-select: none; }
+body.resizing * { cursor: col-resize !important; }
 .treemap-pane {
   position: relative;
   background: var(--treemap-bg);
   border-right: 1px solid var(--border);
   overflow: hidden;
 }
+.side-pane.collapsed { display: none; }
+/* Drag handle straddling the treemap/side boundary. */
+.side-resizer {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: col-resize;
+  z-index: 20;
+}
+.side-resizer:hover { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+.side-collapse {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 6px;
+  border-radius: 5px;
+}
+.side-collapse:hover { background: var(--bg-elev-2); color: var(--text); }
+.side-reopen {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 20;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  color: var(--text);
+  cursor: pointer;
+  padding: 14px 5px;
+  font-size: 13px;
+}
+.side-reopen[hidden] { display: none; }
+.side-reopen:hover { color: var(--accent); border-color: var(--accent); }
 #treemap {
   width: 100%;
   height: 100%;
@@ -474,11 +516,13 @@ body {
 
 /* side panel */
 .side-pane {
+  position: relative;
   display: grid;
   grid-template-rows: 36px 1fr;
   min-height: 0;
   background: var(--bg-elev-1);
 }
+.side-tabs { position: relative; }
 .side-tabs {
   display: flex;
   border-bottom: 1px solid var(--border);

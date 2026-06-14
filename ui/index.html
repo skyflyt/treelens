@@ -103,9 +103,11 @@
               <button class="btn ghost small" id="scan-cancel">Cancel</button>
             </div>
           </div>
+          <button class="side-reopen" id="side-reopen" title="Show panel" aria-label="Show panel" hidden>‹</button>
         </section>
 
         <aside class="side-pane">
+          <div class="side-resizer" id="side-resizer" title="Drag to resize" role="separator" aria-orientation="vertical"></div>
           <nav class="side-tabs" role="tablist">
             <button class="tab active" data-tab="contents" role="tab">Contents</button>
             <button class="tab" data-tab="search" role="tab">Search</button>
@@ -113,6 +115,7 @@
             <button class="tab" data-tab="topfiles" role="tab">Top files</button>
             <button class="tab" data-tab="topdirs" role="tab">Top folders</button>
             <button class="tab" data-tab="inspect" role="tab">Inspect</button>
+            <button class="side-collapse" id="side-collapse" title="Collapse panel" aria-label="Collapse panel">›</button>
           </nav>
           <div class="side-body">
             <div class="tab-pane active" id="tab-contents">

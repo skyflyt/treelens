@@ -49,6 +49,8 @@ interface UiState {
   recents: string[];
   /** Minimum file size (bytes) the duplicate finder considers. */
   dupeMinSize: number;
+  /** Side-panel width in px (persisted). */
+  sideWidth: number;
 }
 
 const state: UiState = {
@@ -70,6 +72,7 @@ const state: UiState = {
   treemapDepth: 4,
   recents: [],
   dupeMinSize: 4096,
+  sideWidth: 460,
 };
 
 function prefersDark(): boolean {
@@ -272,6 +275,9 @@ const elContentsFilter = $<HTMLInputElement>("#contents-filter");
 const elScanErrorsPill = $("#scan-errors-pill");
 const elSelectionBar = $("#selection-bar");
 const elSelectionInfo = $("#selection-info");
+const elMain = $(".main");
+const elSidePane = $(".side-pane");
+const elSideReopen = $("#side-reopen");
 const elDepthCtl = $("#treemap-depth-ctl");
 const elDepthVal = $("#depth-val");
 const elTreemapLegend = $("#treemap-legend");
@@ -409,6 +415,8 @@ const treemap = new Treemap(
   $("#help-btn").addEventListener("click", () => toggleHelp());
   $("#settings-btn").addEventListener("click", () => openSettings());
   elScanErrorsPill.addEventListener("click", () => showScanErrors());
+
+  setupSidePanel();
 
   // Selection action bar.
   $("#sel-recycle").addEventListener("click", () => {
@@ -1985,6 +1993,58 @@ function setupRowDelegation() {
   }
 }
 
+// ---------- side panel: resize + collapse ----------
+
+let sideCollapsed = false;
+
+const SIDE_MIN = 280;
+const SIDE_MAX = 900;
+
+/** Push the persisted width to the grid (unless collapsed). */
+function applySideWidth() {
+  if (!sideCollapsed) elMain.style.setProperty("--side-w", `${state.sideWidth}px`);
+}
+
+function setSideCollapsed(collapsed: boolean) {
+  sideCollapsed = collapsed;
+  elSidePane.classList.toggle("collapsed", collapsed);
+  elSideReopen.hidden = !collapsed;
+  elMain.style.setProperty("--side-w", collapsed ? "0px" : `${state.sideWidth}px`);
+}
+
+function setupSidePanel() {
+  const resizer = $("#side-resizer");
+  resizer.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    document.body.style.cursor = "col-resize";
+    document.body.classList.add("resizing");
+    const onMove = (ev: MouseEvent) => {
+      // Side width = distance from the cursor to the right edge of the window.
+      const w = Math.min(SIDE_MAX, Math.max(SIDE_MIN, window.innerWidth - ev.clientX));
+      state.sideWidth = Math.round(w);
+      elMain.style.setProperty("--side-w", `${state.sideWidth}px`);
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.classList.remove("resizing");
+      saveConfig();
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+  // Double-click the handle resets to the default width.
+  resizer.addEventListener("dblclick", () => {
+    state.sideWidth = 460;
+    applySideWidth();
+    saveConfig();
+  });
+
+  $("#side-collapse").addEventListener("click", () => setSideCollapsed(true));
+  elSideReopen.addEventListener("click", () => setSideCollapsed(false));
+}
+
 // ---------- treemap chrome (depth + legend) ----------
 
 function setTreemapDepth(d: number) {
@@ -2852,7 +2912,10 @@ function applyConfig(raw: string | null) {
         state.recents = v.recents.filter((x) => typeof x === "string").slice(0, RECENTS_MAX);
       if (typeof v.dupeMinSize === "number" && v.dupeMinSize >= 0)
         state.dupeMinSize = Math.round(v.dupeMinSize);
+      if (typeof v.sideWidth === "number")
+        state.sideWidth = Math.min(900, Math.max(280, Math.round(v.sideWidth)));
     }
+    applySideWidth();
   } catch {}
   // Apply visible state to controls.
   elModeAlloc.classList.toggle("active", state.sizeMode === "allocated");
@@ -2889,6 +2952,7 @@ function saveConfig() {
     treemapDepth: state.treemapDepth,
     recents: state.recents,
     dupeMinSize: state.dupeMinSize,
+    sideWidth: state.sideWidth,
   };
   const json = JSON.stringify(v);
   // Fast local cache (sync) + durable portable file (async, best-effort).
