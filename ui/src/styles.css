@@ -119,8 +119,43 @@ body {
   text-overflow: ellipsis;
 }
 .toolbar-center .crumb:hover { background: var(--bg-elev-2); }
+.toolbar-center .crumb.current { color: var(--text); font-weight: 600; cursor: default; }
+.toolbar-center .crumb.current:hover { background: transparent; }
 .toolbar-center .sep { color: var(--text-subtle); padding: 0 2px; }
 .toolbar-center .hint { color: var(--text-subtle); }
+.crumb-overflow { position: relative; display: inline-flex; }
+.crumb-ellipsis { font-weight: 700; letter-spacing: 1px; }
+.crumb-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 180px;
+  max-width: 360px;
+  max-height: 50vh;
+  overflow-y: auto;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-md);
+  padding: 4px;
+  z-index: 50;
+}
+.crumb-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  padding: 5px 9px;
+  border-radius: 5px;
+  cursor: pointer;
+  font: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.crumb-menu-item:hover { background: var(--row-hover); }
 .toolbar-actions { display: flex; align-items: center; gap: 6px; }
 
 .btn {
@@ -392,6 +427,29 @@ body {
 .scan-stats { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .scan-stats-row { font-variant-numeric: tabular-nums; }
 .scan-stats-row span { font-weight: 600; }
+/* Indeterminate scan progress: a sliding sweep (total isn't known up front). */
+.scan-progress {
+  width: 180px;
+  height: 4px;
+  background: var(--bg-elev-2);
+  border-radius: 2px;
+  overflow: hidden;
+  margin: 4px 0 2px;
+}
+.scan-progress-bar {
+  width: 40%;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  animation: scan-sweep 1.1s ease-in-out infinite;
+}
+@keyframes scan-sweep {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(360%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scan-progress-bar { animation: none; width: 100%; opacity: 0.5; }
+}
 
 /* tooltip */
 .tooltip {

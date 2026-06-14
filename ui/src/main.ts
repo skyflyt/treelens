@@ -1286,21 +1286,88 @@ async function refreshBreadcrumb(seq: number = drillSeq) {
   const crumbs = await ipc.breadcrumb(state.currentRoot).catch(() => []);
   if (seq !== drillSeq) return;
   elBreadcrumb.innerHTML = "";
-  crumbs.forEach((c, i) => {
+
+  const crumbBtn = (c: { idx: number; name: string }, current: boolean) => {
     const b = document.createElement("button");
-    b.className = "crumb";
+    b.className = "crumb" + (current ? " current" : "");
     b.type = "button";
     b.textContent = c.name || "(root)";
     b.title = c.name;
-    b.addEventListener("click", () => navigateToFolder(c.idx));
-    elBreadcrumb.appendChild(b);
-    if (i < crumbs.length - 1) {
-      const sep = document.createElement("span");
-      sep.className = "sep";
-      sep.textContent = "›";
-      elBreadcrumb.appendChild(sep);
-    }
+    if (!current) b.addEventListener("click", () => navigateToFolder(c.idx));
+    return b;
+  };
+  const sep = () => {
+    const s = document.createElement("span");
+    s.className = "sep";
+    s.textContent = "›";
+    return s;
+  };
+
+  // Collapse the middle when the path is deep: keep the root + the last few,
+  // and tuck the hidden ancestors behind a "…" dropdown.
+  const KEEP_TAIL = 3;
+  const append = (list: typeof crumbs) =>
+    list.forEach((c, i) => {
+      elBreadcrumb.appendChild(crumbBtn(c, false));
+      if (i < list.length - 1) elBreadcrumb.appendChild(sep());
+    });
+
+  if (crumbs.length <= KEEP_TAIL + 2) {
+    crumbs.forEach((c, i) => {
+      elBreadcrumb.appendChild(crumbBtn(c, i === crumbs.length - 1));
+      if (i < crumbs.length - 1) elBreadcrumb.appendChild(sep());
+    });
+  } else {
+    const hidden = crumbs.slice(1, crumbs.length - KEEP_TAIL);
+    const tail = crumbs.slice(crumbs.length - KEEP_TAIL);
+    elBreadcrumb.appendChild(crumbBtn(crumbs[0], false));
+    elBreadcrumb.appendChild(sep());
+    elBreadcrumb.appendChild(makeCrumbOverflow(hidden));
+    elBreadcrumb.appendChild(sep());
+    tail.forEach((c, i) => {
+      elBreadcrumb.appendChild(crumbBtn(c, i === tail.length - 1));
+      if (i < tail.length - 1) elBreadcrumb.appendChild(sep());
+    });
+    void append; // (kept for clarity; tail handled inline above)
+  }
+}
+
+/** A "…" crumb that drops down the hidden middle ancestors. */
+function makeCrumbOverflow(hidden: { idx: number; name: string }[]): HTMLElement {
+  const wrap = document.createElement("span");
+  wrap.className = "crumb-overflow";
+  const btn = document.createElement("button");
+  btn.className = "crumb crumb-ellipsis";
+  btn.type = "button";
+  btn.textContent = "…";
+  btn.title = `${hidden.length} more folder${hidden.length === 1 ? "" : "s"}`;
+  btn.setAttribute("aria-haspopup", "true");
+  const menu = document.createElement("div");
+  menu.className = "crumb-menu";
+  menu.hidden = true;
+  for (const c of hidden) {
+    const item = document.createElement("button");
+    item.className = "crumb-menu-item";
+    item.type = "button";
+    item.textContent = c.name || "(root)";
+    item.title = c.name;
+    item.addEventListener("click", (e) => {
+      e.stopPropagation();
+      menu.hidden = true;
+      navigateToFolder(c.idx);
+    });
+    menu.appendChild(item);
+  }
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const wasHidden = menu.hidden;
+    document.querySelectorAll(".crumb-menu").forEach((m) => ((m as HTMLElement).hidden = true));
+    menu.hidden = !wasHidden;
   });
+  document.addEventListener("click", () => (menu.hidden = true));
+  wrap.appendChild(btn);
+  wrap.appendChild(menu);
+  return wrap;
 }
 
 async function refreshTreemap(seq: number = drillSeq) {
