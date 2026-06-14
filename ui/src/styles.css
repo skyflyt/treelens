@@ -174,6 +174,7 @@ body {
   transition: background 80ms ease, border-color 80ms ease;
 }
 .btn:hover:not(:disabled) { background: var(--bg-elev-2); }
+.btn:active:not(:disabled) { transform: translateY(1px); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .btn.primary:hover:not(:disabled) { filter: brightness(1.05); }
@@ -1207,6 +1208,42 @@ body.resizing * { cursor: col-resize !important; }
 }
 .drive-row .capacity-fill {
   position: absolute; inset: 0 auto 0 0; background: var(--accent);
+}
+
+/* ---------- micro-interactions & motion ---------- */
+.tab { transition: background 90ms ease, color 90ms ease, border-color 90ms ease; }
+.tab.active { animation: pane-fade 140ms ease-out; }
+/* The active side-pane content fades/rises in on tab switch. */
+.tab-pane.active { animation: pane-fade 150ms ease-out; }
+@keyframes pane-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.list-row { transition: background 70ms ease; }
+.crumb { transition: background 90ms ease; }
+.tab-close,
+.side-collapse,
+.toast-x { transition: background 90ms ease, color 90ms ease; }
+.modal-backdrop { animation: backdrop-in 120ms ease-out; }
+.modal { animation: modal-in 150ms cubic-bezier(0.2, 0.7, 0.3, 1); }
+@keyframes backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.drive-card { transition: border-color 0.12s ease, transform 0.12s ease, background 0.12s ease; }
+.ctx-item { transition: background 70ms ease; }
+
+/* Respect the OS "reduce motion" setting: kill all transitions/animations. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* utility */
