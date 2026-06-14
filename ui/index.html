@@ -208,6 +208,14 @@
         <span id="status-version" class="muted small"></span>
       </footer>
 
+      <div class="selection-bar" id="selection-bar" role="region" aria-label="Selection actions" hidden>
+        <span class="sel-info" id="selection-info"></span>
+        <span class="sel-actions">
+          <button class="btn small" id="sel-recycle" title="Move selected to Recycle Bin">♻ Recycle</button>
+          <button class="btn small sel-danger" id="sel-delete" title="Permanently delete selected">🗑 Delete</button>
+          <button class="btn small ghost" id="sel-clear" title="Clear selection (Esc)">Clear</button>
+        </span>
+      </div>
       <div class="ctx-menu" id="ctx-menu" hidden></div>
       <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="false"></div>
     </div>

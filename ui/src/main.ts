@@ -270,6 +270,8 @@ const elSearchMinSize = $<HTMLSelectElement>("#search-minsize");
 const elTypesList = $("#types-list");
 const elContentsFilter = $<HTMLInputElement>("#contents-filter");
 const elScanErrorsPill = $("#scan-errors-pill");
+const elSelectionBar = $("#selection-bar");
+const elSelectionInfo = $("#selection-info");
 const elDepthCtl = $("#treemap-depth-ctl");
 const elDepthVal = $("#depth-val");
 const elTreemapLegend = $("#treemap-legend");
@@ -408,6 +410,17 @@ const treemap = new Treemap(
   $("#settings-btn").addEventListener("click", () => openSettings());
   elScanErrorsPill.addEventListener("click", () => showScanErrors());
 
+  // Selection action bar.
+  $("#sel-recycle").addEventListener("click", () => {
+    const idx = state.selectedIdx ?? [...state.selectedIdxs][0];
+    if (idx !== undefined) confirmRecycle(idx);
+  });
+  $("#sel-delete").addEventListener("click", () => {
+    const idx = state.selectedIdx ?? [...state.selectedIdxs][0];
+    if (idx !== undefined) confirmDeletePermanent(idx);
+  });
+  $("#sel-clear").addEventListener("click", () => clearSelection());
+
   // Treemap depth control.
   $("#depth-dec").addEventListener("click", () => setTreemapDepth(state.treemapDepth - 1));
   $("#depth-inc").addEventListener("click", () => setTreemapDepth(state.treemapDepth + 1));
@@ -515,6 +528,7 @@ const treemap = new Treemap(
         return;
       case "Escape":
         closeCtxMenu();
+        if (state.selectedIdxs.size > 1) clearSelection();
         return;
     }
     // Type-ahead: printable single characters jump to a matching row.
@@ -796,6 +810,36 @@ function applySelectionClasses() {
     const i = Number((r as HTMLElement).dataset.idx);
     r.classList.toggle("selected", state.selectedIdxs.has(i));
   });
+  updateSelectionBar();
+}
+
+/** Show the floating action bar when 2+ items are selected, with a live count
+ *  and total size summed from the rows we know about (the visible list). */
+function updateSelectionBar() {
+  const n = state.selectedIdxs.size;
+  if (n < 2) {
+    elSelectionBar.hidden = true;
+    return;
+  }
+  let total = 0;
+  let known = 0;
+  for (const f of allRows) {
+    if (state.selectedIdxs.has(f.row.idx)) {
+      total += f.row.size;
+      known++;
+    }
+  }
+  const sizeStr = known > 0 ? ` · ${fmtBytes(total)}${known < n ? "+" : ""}` : "";
+  elSelectionInfo.textContent = `${n} selected${sizeStr}`;
+  elSelectionBar.hidden = false;
+}
+
+/** Clear the multi-selection and hide the action bar. */
+function clearSelection() {
+  state.selectedIdxs.clear();
+  state.selectedIdx = null;
+  applySelectionClasses();
+  treemap.setSelected(null);
 }
 
 /** Modifier-aware click selection on a list row.
