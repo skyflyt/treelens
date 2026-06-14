@@ -797,6 +797,18 @@ function nameIsDir(idx: number): boolean {
 // nodes that aren't currently visible.
 const expandedIdxs = new Set<number>();
 
+// Single- vs. double-click disambiguation for list rows. A plain click is
+// deferred this long; a double-click within the window cancels it and runs the
+// drill/open instead. Roughly the OS double-click time.
+const DOUBLE_CLICK_MS = 230;
+let pendingRowClick: number | undefined;
+function cancelPendingRowClick() {
+  if (pendingRowClick !== undefined) {
+    clearTimeout(pendingRowClick);
+    pendingRowClick = undefined;
+  }
+}
+
 async function toggleExpand(idx: number) {
   if (expandedIdxs.has(idx)) expandedIdxs.delete(idx);
   else expandedIdxs.add(idx);
@@ -1007,28 +1019,34 @@ function renderRow(row: DirRow, depth: number = 0): HTMLElement {
     });
   }
 
-  // Row body click:
-  //  - with Ctrl/Shift → adjust the multi-selection (no drill), so you can
-  //    pick several files/folders for a bulk action.
-  //  - plain click on a folder → drill in; plain click on a file → select.
+  // Row body interactions:
+  //  - Ctrl/Shift-click → adjust the multi-selection (no expand/drill).
+  //  - single-click a folder → select + expand/collapse in place.
+  //  - single-click a file   → select.
+  //  - double-click a folder → drill in (filter the view to it).
+  //  - double-click a file   → open in its default app.
+  // A short timer disambiguates single vs. double so a double-click doesn't
+  // also toggle the expand on its way to drilling.
   el.addEventListener("click", (e) => {
     e.stopPropagation();
     if (e.ctrlKey || e.metaKey || e.shiftKey) {
+      cancelPendingRowClick();
       clickSelect(row.idx, e);
       return;
     }
-    if (row.is_dir && !row.is_reparse) {
-      drillInto(row.idx);
-    } else {
+    // Defer the single-click action; a dblclick within the window cancels it.
+    cancelPendingRowClick();
+    pendingRowClick = window.setTimeout(() => {
+      pendingRowClick = undefined;
       selectNode(row.idx);
-    }
+      if (row.is_dir && !row.is_reparse) toggleExpand(row.idx);
+    }, DOUBLE_CLICK_MS);
   });
-  // Double-click: same as single for dirs (kept for muscle memory); for files,
-  // hand off to Explorer.
   el.addEventListener("dblclick", (e) => {
     e.stopPropagation();
+    cancelPendingRowClick();
     if (row.is_dir && !row.is_reparse) drillInto(row.idx);
-    else ipc.openInExplorer(row.idx).catch(() => {});
+    else ipc.openFile(row.idx).catch(() => ipc.openInExplorer(row.idx).catch(() => {}));
   });
   el.addEventListener("contextmenu", (e) => {
     e.preventDefault();

@@ -4,6 +4,19 @@ All notable changes to Treelens are documented here.
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning is [SemVer](https://semver.org/) (0.x while pre-1.0).
 
+## [0.3.7] — 2026-06-13
+
+### Changed
+- **Folder click behavior.** Single-clicking a folder in the Contents list now
+  **expands/collapses** it in place (like the chevron); **double-click** drills
+  in / filters the view to that folder. Previously a single click drilled in,
+  which made casual browsing jumpy. Files are unchanged (single-click selects,
+  double-click opens). A short single-vs-double-click timer keeps a double-click
+  from toggling the expand on its way to drilling. Ctrl/Shift-click still
+  multi-selects; the breadcrumb and Enter/arrow-key navigation are unchanged.
+
+[0.3.7]: https://github.com/skyflyt/treelens/releases/tag/v0.3.7
+
 ## [0.3.6] — 2026-06-13
 
 ### Fixed
