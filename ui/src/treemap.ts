@@ -47,6 +47,10 @@ export class Treemap {
   private baseCanvas: HTMLCanvasElement;
   private baseCtx: CanvasRenderingContext2D;
   private baseReady = false;
+  // Snapshot of the previous layout, used for a brief crossfade on drill.
+  private prevCanvas: HTMLCanvasElement;
+  private prevReady = false;
+  private animRaf = 0;
 
   constructor(canvas: HTMLCanvasElement, theme: TreemapTheme, interactions: TreemapInteractions) {
     this.canvas = canvas;
@@ -59,6 +63,7 @@ export class Treemap {
     const bctx = this.baseCanvas.getContext("2d", { alpha: false });
     if (!bctx) throw new Error("2D context unavailable");
     this.baseCtx = bctx;
+    this.prevCanvas = document.createElement("canvas");
     canvas.addEventListener("mousemove", this.handleMouseMove);
     canvas.addEventListener("mouseleave", this.handleMouseLeave);
     canvas.addEventListener("click", this.handleClick);
@@ -82,12 +87,82 @@ export class Treemap {
     this.draw();
   }
   setData(rects: Rect[], rootIdx: number, nameOf: RectNameLookup) {
+    // Snapshot the current layout so we can crossfade into the new one.
+    this.snapshotPrev();
     this.rects = rects;
     this.rootIdx = rootIdx;
     this.nameOf = nameOf;
     this.hoverIdx = null;
     this.renderBase();
-    this.draw();
+    this.animateIn();
+  }
+
+  /** Copy the current base layer into the prev buffer for the next transition. */
+  private snapshotPrev() {
+    if (!this.baseReady || this.baseCanvas.width === 0) {
+      this.prevReady = false;
+      return;
+    }
+    this.prevCanvas.width = this.baseCanvas.width;
+    this.prevCanvas.height = this.baseCanvas.height;
+    const c = this.prevCanvas.getContext("2d", { alpha: false });
+    if (!c) {
+      this.prevReady = false;
+      return;
+    }
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.drawImage(this.baseCanvas, 0, 0);
+    this.prevReady = true;
+  }
+
+  private static reducedMotion(): boolean {
+    return (
+      typeof window !== "undefined" &&
+      !!window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    );
+  }
+
+  /** Crossfade + gentle zoom from the previous layout into the new one. Falls
+   *  back to an instant draw when motion is reduced or there's nothing to fade
+   *  from (first scan). */
+  private animateIn() {
+    if (this.animRaf) {
+      cancelAnimationFrame(this.animRaf);
+      this.animRaf = 0;
+    }
+    if (Treemap.reducedMotion() || !this.prevReady) {
+      this.draw();
+      return;
+    }
+    const ctx = this.ctx;
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    const DUR = 190;
+    const start = performance.now();
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / DUR);
+      const eased = t * (2 - t); // easeOutQuad
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      // Old layout underneath.
+      ctx.globalAlpha = 1;
+      ctx.drawImage(this.prevCanvas, 0, 0);
+      // New layout fading in, easing from a slight zoom to 1:1.
+      const scale = 1.05 - 0.05 * eased;
+      const dw = W * scale;
+      const dh = H * scale;
+      ctx.globalAlpha = eased;
+      ctx.drawImage(this.baseCanvas, (W - dw) / 2, (H - dh) / 2, dw, dh);
+      ctx.globalAlpha = 1;
+      if (t < 1) {
+        this.animRaf = requestAnimationFrame(step);
+      } else {
+        this.animRaf = 0;
+        this.prevReady = false;
+        this.draw(); // settle to the crisp final frame + overlay
+      }
+    };
+    this.animRaf = requestAnimationFrame(step);
   }
 
   /** Resize canvas backing store to match its CSS size and the device pixel ratio. */
