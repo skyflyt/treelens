@@ -15,7 +15,6 @@
 //! sub-48-byte target in PLAN.md §3.3 is a v0.2 optimization.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 pub const FLAG_DIR: u16 = 1 << 0;
 pub const FLAG_REPARSE: u16 = 1 << 1;
@@ -84,48 +83,66 @@ impl Tree {
         // subtrees.) Records were originally allocated dense via fetch_add, so
         // after the sort idxs are 0..n.
         records.sort_unstable_by_key(|r| r.idx);
-        // Sanity: detect duplicates / gaps. We don't error here (a hotfix
-        // shouldn't panic the UI), but we'd notice in tests.
-        debug_assert!(
-            records.iter().enumerate().all(|(i, r)| r.idx as usize == i),
-            "scanner record idxs are not dense after sort"
-        );
 
-        // First pass: build per-parent child lists, keyed by scanner-local index.
-        // (Which now coincides with Vec position.)
-        let mut children_of: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-        for (i, r) in records.iter().enumerate() {
-            if r.parent != u32::MAX {
-                children_of.entry(r.parent).or_default().push(i as u32);
-            }
+        // The build is keyed by Vec POSITION, not by the scanner idx value, so it
+        // stays correct even if the scanner stream has gaps or duplicate idxs
+        // (which a cancelled mid-directory scan can produce). We map each
+        // scanner idx -> its Vec position once; any record whose parent idx
+        // isn't present is treated as an orphan and dropped from the tree rather
+        // than corrupting it or panicking. Earlier this relied on a dense-idx
+        // `debug_assert` that was compiled out of release builds.
+        let mut idx_to_pos: std::collections::HashMap<u32, u32> =
+            std::collections::HashMap::with_capacity(n);
+        for (pos, r) in records.iter().enumerate() {
+            idx_to_pos.insert(r.idx, pos as u32);
         }
 
-        // We want children stored contiguously per parent so `first_child + child_count`
-        // is a real range. The natural layout for that is BFS (level-order): root, then
-        // all root's children, then all grandchildren ordered by parent, etc. DFS
-        // preorder does NOT have this property — siblings get separated by the prior
-        // sibling's full subtree, so `first_child + child_count` slices across non-
-        // siblings and queries explode into duplicates. BFS is the fix.
+        // children_by_pos[parent_pos] = child Vec positions. Orphans (parent idx
+        // not found, or self-referential) are simply never added.
+        let mut children_by_pos: Vec<Vec<u32>> = vec![Vec::new(); n];
+        let mut root_pos: Option<u32> = None;
+        for (pos, r) in records.iter().enumerate() {
+            if r.parent == u32::MAX {
+                if root_pos.is_none() {
+                    root_pos = Some(pos as u32);
+                }
+                continue;
+            }
+            if let Some(&ppos) = idx_to_pos.get(&r.parent) {
+                if ppos as usize != pos {
+                    children_by_pos[ppos as usize].push(pos as u32);
+                }
+            }
+        }
+        let root_pos = root_pos.unwrap_or(0);
+
+        // BFS (level-order) from the root so each parent's children land in one
+        // contiguous run — required for `first_child + child_count` slicing.
+        // A `visited` set makes this cycle-safe (a malformed self/loop parent
+        // can't spin forever or list a node twice).
         let mut order: Vec<u32> = Vec::with_capacity(n);
+        let mut visited = vec![false; n];
         let mut queue: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
-        queue.push_back(0);
-        while let Some(idx) = queue.pop_front() {
-            order.push(idx);
-            if let Some(children) = children_of.get(&idx) {
-                for &c in children {
+        queue.push_back(root_pos);
+        visited[root_pos as usize] = true;
+        while let Some(pos) = queue.pop_front() {
+            order.push(pos);
+            for &c in &children_by_pos[pos as usize] {
+                if !visited[c as usize] {
+                    visited[c as usize] = true;
                     queue.push_back(c);
                 }
             }
         }
 
-        // Map scanner-local index -> new arena index.
-        let mut remap = vec![0u32; n];
-        for (new_idx, &old_idx) in order.iter().enumerate() {
-            remap[old_idx as usize] = new_idx as u32;
+        // Map old Vec position -> new arena index.
+        let mut remap = vec![u32::MAX; n];
+        for (new_idx, &old_pos) in order.iter().enumerate() {
+            remap[old_pos as usize] = new_idx as u32;
         }
 
         // Build new nodes, fixing parent pointers and inserting child ranges.
-        let mut nodes: Vec<Node> = Vec::with_capacity(n);
+        let mut nodes: Vec<Node> = Vec::with_capacity(order.len());
         for &old_idx in &order {
             let r = &records[old_idx as usize];
             let mut flags = r.flags;
@@ -146,10 +163,15 @@ impl Tree {
             if r.flags & scanner::FLAG_READONLY != 0 {
                 flags |= FLAG_READONLY;
             }
+            // Resolve the parent to a NEW arena index via position map. The root
+            // (and any node whose parent didn't make it into `order`) gets MAX.
             let parent = if r.parent == u32::MAX {
                 u32::MAX
             } else {
-                remap[r.parent as usize]
+                idx_to_pos
+                    .get(&r.parent)
+                    .map(|&ppos| remap[ppos as usize])
+                    .unwrap_or(u32::MAX)
             };
             nodes.push(Node {
                 name: r.name.clone(),
@@ -166,28 +188,22 @@ impl Tree {
                 flags,
             });
         }
+        let node_count = nodes.len();
 
-        // Wire children ranges. Because of the DFS order, every parent's children appear
-        // as a contiguous block — but not necessarily right after the parent. We need a
-        // direct scan: for each new node, if its parent isn't MAX, extend the parent's
-        // child range.
-        // children_of is keyed by old idx; convert.
-        let mut new_children: Vec<Vec<u32>> = vec![Vec::new(); n];
-        for (old_parent, kids) in &children_of {
-            let np = remap[*old_parent as usize] as usize;
-            for &k in kids {
-                new_children[np].push(remap[k as usize]);
+        // Wire children ranges from the BFS order: a parent's children occupy a
+        // contiguous run of new indices, so first_child = min, count = len.
+        let mut new_children: Vec<Vec<u32>> = vec![Vec::new(); node_count];
+        for (new_idx, node) in nodes.iter().enumerate() {
+            if node.parent != u32::MAX {
+                new_children[node.parent as usize].push(new_idx as u32);
             }
         }
-        // Sort each parent's children by their NEW index so they form a contiguous run.
         for (parent_idx, kids) in new_children.iter_mut().enumerate() {
             if kids.is_empty() {
                 continue;
             }
             kids.sort_unstable();
-            // Sanity: contiguous range starting at kids[0].
-            let first = kids[0];
-            nodes[parent_idx].first_child = first;
+            nodes[parent_idx].first_child = kids[0];
             nodes[parent_idx].child_count = kids.len() as u32;
         }
 
@@ -195,7 +211,7 @@ impl Tree {
         // Each iteration first finalizes the current node's own counts (1 if file,
         // 1 dir contribution if directory) then propagates the aggregated totals to
         // its parent. Walking back-to-front guarantees children are finalized first.
-        for i in (0..n).rev() {
+        for i in (0..node_count).rev() {
             // Stamp self counts on leaves before we look at them.
             {
                 let node = &mut nodes[i];
@@ -276,11 +292,18 @@ impl Tree {
     }
 
     /// Walk from root to `idx`, returning each ancestor's (index, name).
+    /// Bounds- and cycle-guarded: a malformed `parent` (out of range, or a loop)
+    /// can't index-panic or spin forever — it just stops the walk.
     pub fn path(&self, idx: u32) -> Vec<(u32, String)> {
         let mut out: Vec<(u32, String)> = Vec::new();
         let mut cur = idx;
-        loop {
-            let n = &self.nodes[cur as usize];
+        // Depth cap: no real filesystem path is anywhere near this deep, so this
+        // only ever trips on corrupt input (e.g. a self-referential parent).
+        let cap = self.nodes.len() + 1;
+        for _ in 0..cap {
+            let Some(n) = self.nodes.get(cur as usize) else {
+                break;
+            };
             out.push((cur, n.name.clone()));
             if n.parent == u32::MAX {
                 break;
@@ -836,6 +859,59 @@ mod tests {
         assert_eq!(names, &["A", "B"]);
         assert_eq!(t.nodes[0].logical, 300, "root rolls up to 100+200");
         assert_eq!(t.nodes[0].file_count, 2);
+    }
+
+    #[test]
+    fn build_tolerates_gaps_and_orphans_without_panic() {
+        // Simulate a cancelled mid-directory scan: idx 2 was allocated but never
+        // emitted (gap), and idx 4 references a parent (3) that was never
+        // emitted (orphan). Release builds must NOT panic or corrupt — the
+        // orphan is dropped, the rest of the tree is intact.
+        let records = vec![
+            rec(0, "root", u32::MAX, 0, true),
+            rec(1, "A", 0, 0, true),
+            // idx 2 missing (gap)
+            rec(3, "A1", 1, 100, false),
+            rec(4, "ghost", 99, 500, false), // parent 99 never existed → orphan
+        ];
+        let t = Tree::build(records);
+        // root → A → A1, ghost dropped. root rolls up only A1's 100.
+        assert_eq!(t.nodes[0].name, "root");
+        assert_eq!(t.nodes[0].logical, 100, "orphan's 500 must not be counted");
+        let kids = list_dir(&t, 0, SortKey::NameAsc, 0, 100, SizeMode::Logical);
+        assert_eq!(
+            kids.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            &["A"]
+        );
+        // No node named "ghost" anywhere.
+        assert!(t.nodes.iter().all(|n| n.name != "ghost"));
+    }
+
+    #[test]
+    fn path_is_cycle_and_bounds_safe() {
+        // A well-formed tree: path() returns root→leaf.
+        let t = flat();
+        let leaf = t.nodes.iter().position(|n| n.name == "c.bin").unwrap() as u32;
+        let p = t.path(leaf);
+        assert_eq!(p.first().unwrap().1, "root");
+        assert_eq!(p.last().unwrap().1, "c.bin");
+        // An out-of-range idx must not panic — just yields an empty/partial path.
+        let _ = t.path(99999);
+    }
+
+    #[test]
+    fn empty_and_single_node_trees() {
+        // No records → empty tree, no panic.
+        let empty = Tree::build(vec![]);
+        assert_eq!(empty.nodes.len(), 0);
+        // Root-only tree (e.g. scanning an empty folder).
+        let single = Tree::build(vec![rec(0, "root", u32::MAX, 0, true)]);
+        assert_eq!(single.nodes.len(), 1);
+        assert_eq!(
+            list_dir(&single, 0, SortKey::SizeDesc, 0, 100, SizeMode::Allocated).len(),
+            0
+        );
+        let _ = treemap_layout(&single, 0, LayoutOpts::default(), SizeMode::Allocated);
     }
 
     #[test]

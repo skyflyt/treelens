@@ -176,8 +176,13 @@ pub fn scan(
     });
 
     let queue = Arc::new(WorkQueue::new());
-    queue.push((opts.root.clone(), 0));
-    queue.active.fetch_add(1, Ordering::AcqRel);
+    // Root reparse guard: if the scan root is itself a junction/symlink, do NOT
+    // traverse it (matches the "never descend reparse points" rule). We still
+    // emitted the root record above; just don't enqueue it for a walk.
+    if root_flags & FLAG_REPARSE == 0 {
+        queue.push((opts.root.clone(), 0));
+        queue.active.fetch_add(1, Ordering::AcqRel);
+    }
 
     let next_index = Arc::new(AtomicU64::new(1));
     let opts = Arc::new(opts);
@@ -336,7 +341,15 @@ fn worker(
                         .map(|d| d.as_secs() as i64)
                         .unwrap_or(0);
 
-                    let idx = next_index.fetch_add(1, Ordering::Relaxed) as u32;
+                    let idx64 = next_index.fetch_add(1, Ordering::Relaxed);
+                    // Record idx/parent are u32. Past u32::MAX a cast would wrap
+                    // and collide with live idxs → tree corruption. Cancel
+                    // gracefully instead (no real volume has 4.29B entries).
+                    if idx64 > u32::MAX as u64 {
+                        cancel.cancel();
+                        break;
+                    }
+                    let idx = idx64 as u32;
                     if is_dir {
                         flags |= FLAG_DIR;
                         // Children will follow; queue this directory for traversal.
@@ -351,15 +364,22 @@ fn worker(
                     }
                     // Symlinks/reparse points: zero-size leaf, badge in UI.
 
-                    let _ = record_tx.send(Record {
-                        idx,
-                        name,
-                        parent: parent_idx,
-                        logical,
-                        allocated,
-                        mtime,
-                        flags,
-                    });
+                    // If the receiver is gone (UI closed), stop walking the disk.
+                    if record_tx
+                        .send(Record {
+                            idx,
+                            name,
+                            parent: parent_idx,
+                            logical,
+                            allocated,
+                            mtime,
+                            flags,
+                        })
+                        .is_err()
+                    {
+                        cancel.cancel();
+                        break;
+                    }
                 }
             }
             Err(_) => {
@@ -393,7 +413,12 @@ fn align_up(n: u64, align: u64) -> u64 {
     if align == 0 {
         n
     } else {
-        (n + align - 1) & !(align - 1)
+        // Saturating: a sparse/corrupt file reporting a logical size within one
+        // cluster of u64::MAX must not overflow-panic (debug) or wrap (release).
+        match n.checked_add(align - 1) {
+            Some(v) => v & !(align - 1),
+            None => n,
+        }
     }
 }
 
