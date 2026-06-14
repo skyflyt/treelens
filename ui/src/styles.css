@@ -408,8 +408,11 @@ body {
   max-width: 320px;
   font-variant-numeric: tabular-nums;
 }
-.tooltip .t-name { font-weight: 600; word-break: break-all; margin-bottom: 2px; }
+.tooltip { position: fixed; line-height: 1.45; }
+.tooltip .t-name { font-weight: 600; word-break: break-all; margin-bottom: 3px; }
 .tooltip .t-row { color: var(--text-muted); }
+.tooltip .t-size { color: var(--text); font-weight: 500; }
+.tooltip .t-muted { color: var(--text-muted); font-size: 11px; }
 
 /* side panel */
 .side-pane {

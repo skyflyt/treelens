@@ -1321,10 +1321,15 @@ async function refreshTreemap(seq: number = drillSeq) {
   // lookup IPC call — the treemap renderer reads name straight off each rect.
   state.rectNames.clear();
   dirIdxs.clear();
+  let rootSize = 0;
   for (const r of rects) {
     state.rectNames.set(r.idx, r.name);
     if (r.is_dir) dirIdxs.add(r.idx);
+    if (r.idx === state.currentRoot) rootSize = r.size;
+    if (r.size > rootSize && r.depth <= 1) rootSize = Math.max(rootSize, r.size);
   }
+  // Size of the view's root, for the tooltip's "% of view" readout.
+  treemapRootSize = rootSize || rects.reduce((m, r) => Math.max(m, r.size), 0);
   treemap.setData(rects, state.currentRoot, (idx) => state.rectNames.get(idx) || "");
 }
 
@@ -2030,23 +2035,43 @@ async function renderDriveCards() {
 
 // ---------- tooltip ----------
 
+let treemapRootSize = 0;
+
 function updateTooltip(rect: Rect | null, x: number, y: number) {
   if (!rect) {
     elTooltip.hidden = true;
     return;
   }
   const name = state.rectNames.get(rect.idx) || "";
-  elTooltip.innerHTML = `
-    <div class="t-name">${escapeHtml(name || "(unknown)")}</div>
-    <div class="t-row">${fmtBytes(rect.size)}</div>
-    <div class="t-row">${rect.is_dir ? "folder" : "file"} · depth ${rect.depth}</div>
-  `;
+  const icon = rect.is_dir ? "📁" : "📄";
+  const pct = treemapRootSize > 0 ? (rect.size / treemapRootSize) * 100 : 0;
+  const pctStr = pct >= 0.1 ? `${pct.toFixed(1)}% of view` : "<0.1% of view";
+  // Age: show the subtree's newest activity, and a range if it spans time.
+  let ageRow = "";
+  if (rect.newest_mtime > 0) {
+    const newest = fmtMtime(rect.newest_mtime);
+    if (rect.is_dir && rect.oldest_mtime > 0 && rect.oldest_mtime !== rect.newest_mtime) {
+      ageRow = `<div class="t-row t-muted">${escapeHtml(fmtMtime(rect.oldest_mtime))} – ${escapeHtml(newest)}</div>`;
+    } else {
+      ageRow = `<div class="t-row t-muted">modified ${escapeHtml(newest)}</div>`;
+    }
+  }
+  elTooltip.innerHTML =
+    `<div class="t-name">${icon} ${escapeHtml(name || "(unknown)")}</div>` +
+    `<div class="t-row t-size">${escapeHtml(fmtBytes(rect.size))} · ${pctStr}</div>` +
+    `<div class="t-row t-muted">${rect.is_dir ? "folder" : "file"}${rect.is_dir ? " · double-click to drill in" : ""}</div>` +
+    ageRow;
   elTooltip.hidden = false;
-  const pad = 10;
-  const tx = Math.min(window.innerWidth - elTooltip.offsetWidth - pad, x + pad);
-  const ty = Math.min(window.innerHeight - elTooltip.offsetHeight - pad, y + pad);
-  elTooltip.style.left = tx + "px";
-  elTooltip.style.top = ty + "px";
+  const pad = 12;
+  // Flip to the other side of the cursor when near the right/bottom edges.
+  const w = elTooltip.offsetWidth;
+  const h = elTooltip.offsetHeight;
+  let tx = x + pad;
+  if (tx + w > window.innerWidth - pad) tx = x - w - pad;
+  let ty = y + pad;
+  if (ty + h > window.innerHeight - pad) ty = y - h - pad;
+  elTooltip.style.left = Math.max(pad, tx) + "px";
+  elTooltip.style.top = Math.max(pad, ty) + "px";
 }
 
 // ---------- context menu ----------
