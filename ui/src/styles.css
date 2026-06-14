@@ -798,6 +798,46 @@ body {
   to { opacity: 0; transform: translateX(12px); }
 }
 
+/* settings modal */
+.settings-body { display: flex; flex-direction: column; gap: 14px; }
+.set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.set-row > span { font-size: 13px; }
+.set-row.set-col { flex-direction: column; align-items: stretch; gap: 6px; }
+.set-row select,
+.set-row input[type="number"] {
+  background: var(--bg-elev-1);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 4px 8px;
+  font-size: 12.5px;
+}
+.set-row input[type="number"] { width: 70px; }
+.set-row textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-elev-1);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  resize: vertical;
+}
+.set-row code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--bg-elev-1);
+  padding: 0 3px;
+  border-radius: 3px;
+}
+
 /* help overlay */
 .help-row {
   display: grid;

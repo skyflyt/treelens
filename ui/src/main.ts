@@ -46,6 +46,8 @@ interface UiState {
   treemapDepth: number;
   /** Recently scanned roots, most-recent-first (persisted). */
   recents: string[];
+  /** Minimum file size (bytes) the duplicate finder considers. */
+  dupeMinSize: number;
 }
 
 const state: UiState = {
@@ -66,6 +68,7 @@ const state: UiState = {
   excludes: [],
   treemapDepth: 4,
   recents: [],
+  dupeMinSize: 4096,
 };
 
 function prefersDark(): boolean {
@@ -392,6 +395,7 @@ const treemap = new Treemap(
   setupSearch();
   setupColumnSort();
   $("#help-btn").addEventListener("click", () => toggleHelp());
+  $("#settings-btn").addEventListener("click", () => openSettings());
   elScanErrorsPill.addEventListener("click", () => showScanErrors());
 
   // Treemap depth control.
@@ -1050,6 +1054,105 @@ function openHelp() {
   backdrop.querySelector("#help-close")?.addEventListener("click", closeHelp);
   document.body.appendChild(backdrop);
   (backdrop.querySelector("#help-close") as HTMLElement)?.focus();
+}
+
+// ---------- settings ----------
+
+function openSettings() {
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  const themeSel = (v: string) => (state.themeFollowsSystem ? "system" : state.theme) === v ? "selected" : "";
+  const dupOpts = [
+    [0, "any size"],
+    [4096, "4 KB"],
+    [1048576, "1 MB"],
+    [10485760, "10 MB"],
+    [104857600, "100 MB"],
+  ] as const;
+  backdrop.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Settings">
+      <div class="modal-head">
+        <div class="modal-title">Settings</div>
+        <button class="btn ghost small" id="set-close" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body settings-body" style="min-width:460px">
+        <label class="set-row"><span>Theme</span>
+          <select id="set-theme">
+            <option value="system" ${themeSel("system")}>Follow system</option>
+            <option value="light" ${themeSel("light")}>Light</option>
+            <option value="dark" ${themeSel("dark")}>Dark</option>
+          </select>
+        </label>
+        <label class="set-row"><span>Default size mode</span>
+          <select id="set-sizemode">
+            <option value="allocated" ${state.sizeMode === "allocated" ? "selected" : ""}>On disk</option>
+            <option value="logical" ${state.sizeMode === "logical" ? "selected" : ""}>Logical</option>
+          </select>
+        </label>
+        <label class="set-row"><span>Treemap depth</span>
+          <input type="number" id="set-depth" min="2" max="6" value="${state.treemapDepth}" />
+        </label>
+        <label class="set-row"><span>Duplicate finder — minimum size</span>
+          <select id="set-dupemin">
+            ${dupOpts.map(([v, t]) => `<option value="${v}" ${state.dupeMinSize === v ? "selected" : ""}>${t}</option>`).join("")}
+          </select>
+        </label>
+        <div class="set-row set-col">
+          <span>Scan exclusions <span class="muted small">(one glob per line — e.g. <code>node_modules</code>, <code>*.tmp</code>, <code>C:\\Windows\\*</code>). Applies to the next scan.</span></span>
+          <textarea id="set-excludes" rows="6" spellcheck="false" placeholder="node_modules&#10;*.tmp"></textarea>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <span class="muted small" style="margin-right:auto">Settings save to a portable file next to the app.</span>
+        <button class="btn" id="set-done">Done</button>
+      </div>
+    </div>`;
+  const exTa = backdrop.querySelector("#set-excludes") as HTMLTextAreaElement;
+  exTa.value = state.excludes.join("\n");
+
+  document.body.appendChild(backdrop);
+  const close = () => backdrop.remove();
+  backdrop.querySelector("#set-close")?.addEventListener("click", close);
+  backdrop.querySelector("#set-done")?.addEventListener("click", () => {
+    // Commit exclusions on close (textarea isn't live).
+    state.excludes = exTa.value
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    saveConfig();
+    close();
+  });
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) {
+      state.excludes = exTa.value.split("\n").map((s) => s.trim()).filter(Boolean);
+      saveConfig();
+      close();
+    }
+  });
+
+  // Live-apply the simple toggles.
+  backdrop.querySelector("#set-theme")?.addEventListener("change", (e) => {
+    const v = (e.target as HTMLSelectElement).value;
+    if (v === "system") {
+      state.themeFollowsSystem = true;
+      state.theme = prefersDark() ? "dark" : "light";
+    } else {
+      state.themeFollowsSystem = false;
+      state.theme = v === "dark" ? "dark" : "light";
+    }
+    applyTheme();
+    saveConfig();
+  });
+  backdrop.querySelector("#set-sizemode")?.addEventListener("change", (e) => {
+    setSizeMode((e.target as HTMLSelectElement).value as SizeMode);
+  });
+  backdrop.querySelector("#set-depth")?.addEventListener("change", (e) => {
+    setTreemapDepth(Number((e.target as HTMLInputElement).value) || state.treemapDepth);
+  });
+  backdrop.querySelector("#set-dupemin")?.addEventListener("change", (e) => {
+    state.dupeMinSize = Number((e.target as HTMLSelectElement).value) || 0;
+    saveConfig();
+  });
 }
 
 /** Activate the Search side-tab and focus its input (Ctrl+F). */
@@ -2218,8 +2321,8 @@ async function runDuplicateFinder(idx: number) {
   pushLoading("Hashing files to find duplicates…");
   let report;
   try {
-    // Skip tiny files: dupes under 4 KiB rarely matter and inflate the list.
-    report = await ipc.findDuplicates(idx, 4096);
+    // Skip tiny files (configurable in Settings): small dupes inflate the list.
+    report = await ipc.findDuplicates(idx, state.dupeMinSize);
   } catch (e) {
     popLoading();
     toastErr("Duplicate scan failed", e);
@@ -2553,6 +2656,8 @@ function applyConfig(raw: string | null) {
         state.treemapDepth = Math.min(6, Math.max(2, Math.round(v.treemapDepth)));
       if (Array.isArray(v.recents))
         state.recents = v.recents.filter((x) => typeof x === "string").slice(0, RECENTS_MAX);
+      if (typeof v.dupeMinSize === "number" && v.dupeMinSize >= 0)
+        state.dupeMinSize = Math.round(v.dupeMinSize);
     }
   } catch {}
   // Apply visible state to controls.
@@ -2589,6 +2694,7 @@ function saveConfig() {
     excludes: state.excludes,
     treemapDepth: state.treemapDepth,
     recents: state.recents,
+    dupeMinSize: state.dupeMinSize,
   };
   const json = JSON.stringify(v);
   // Fast local cache (sync) + durable portable file (async, best-effort).
