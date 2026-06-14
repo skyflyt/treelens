@@ -329,6 +329,12 @@ export const ipc = {
   findDuplicates(root: number, minSize: number) {
     return invoke<DupeReport>("find_duplicates", { tab: activeTab, root, minSize });
   },
+  loadConfig() {
+    return invoke<string>("load_config");
+  },
+  saveConfig(json: string) {
+    return invoke<void>("save_config", { json });
+  },
   listDrives() {
     return invoke<DriveEntry[]>("list_drives");
   },

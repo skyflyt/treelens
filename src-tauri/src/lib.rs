@@ -869,6 +869,50 @@ fn save_bytes(path: String, bytes: Vec<u8>) -> Result<(), CommandError> {
     })
 }
 
+/// Candidate locations for the portable settings file, most-preferred first:
+/// next to the executable (true portable mode), then %APPDATA%\Treelens
+/// (fallback for per-machine installs under Program Files where the exe dir
+/// isn't writable).
+fn config_candidates() -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            v.push(dir.join("treelens.config.json"));
+        }
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        v.push(PathBuf::from(appdata).join("Treelens").join("config.json"));
+    }
+    v
+}
+
+/// Load the persisted UI settings JSON (empty string if none exists yet).
+#[tauri::command]
+fn load_config() -> Result<String, CommandError> {
+    for p in config_candidates() {
+        if let Ok(s) = std::fs::read_to_string(&p) {
+            return Ok(s);
+        }
+    }
+    Ok(String::new())
+}
+
+/// Persist the UI settings JSON to the first writable candidate location.
+#[tauri::command]
+fn save_config(json: String) -> Result<(), CommandError> {
+    let mut last_err = String::from("no writable config location");
+    for p in config_candidates() {
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match std::fs::write(&p, &json) {
+            Ok(()) => return Ok(()),
+            Err(e) => last_err = format!("{}: {e}", p.display()),
+        }
+    }
+    Err(CommandError { message: last_err })
+}
+
 #[derive(Debug, Deserialize)]
 struct RecyclePayload {
     tab: u32,
@@ -1474,6 +1518,8 @@ pub fn run() {
             search,
             export_tree,
             find_duplicates,
+            load_config,
+            save_config,
             open_in_explorer,
             open_in_terminal,
             copy_path,

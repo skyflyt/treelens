@@ -257,7 +257,7 @@ const treemap = new Treemap(
 // ---------- bootstrap ----------
 
 (async function init() {
-  loadConfig();
+  await loadConfig();
   applyTheme();
 
   // Admin banner: show only if not elevated and not dismissed this session.
@@ -454,8 +454,18 @@ const treemap = new Treemap(
   // Click anywhere closes context menu.
   document.addEventListener("click", () => closeCtxMenu(), true);
 
-  // Initial canvas size.
-  const ro = new ResizeObserver(() => sizeTreemap());
+  // Initial canvas size. Coalesce resize bursts (window drag) to one
+  // sizeTreemap per animation frame so we don't re-render the treemap base
+  // layer on every intermediate size.
+  let resizePending = false;
+  const ro = new ResizeObserver(() => {
+    if (resizePending) return;
+    resizePending = true;
+    requestAnimationFrame(() => {
+      resizePending = false;
+      sizeTreemap();
+    });
+  });
   ro.observe(elTreemapPane);
   sizeTreemap();
   renderEmptyState();
@@ -2175,16 +2185,17 @@ async function embedFlow(idx: number, method: StegoMethod) {
 // ---------- config ----------
 
 const CONFIG_KEY = "treelens.ui.v1";
-function loadConfig() {
+
+function applyConfig(raw: string | null) {
   try {
-    const raw = localStorage.getItem(CONFIG_KEY);
-    if (!raw) return;
-    const v = JSON.parse(raw) as Partial<UiState>;
-    if (v.theme === "light" || v.theme === "dark") state.theme = v.theme;
-    if (typeof v.themeFollowsSystem === "boolean") state.themeFollowsSystem = v.themeFollowsSystem;
-    if (v.sizeMode === "logical" || v.sizeMode === "allocated") state.sizeMode = v.sizeMode;
-    if (v.colorMode === "type" || v.colorMode === "heat") state.colorMode = v.colorMode;
-    if (v.sort) state.sort = v.sort;
+    if (raw) {
+      const v = JSON.parse(raw) as Partial<UiState>;
+      if (v.theme === "light" || v.theme === "dark") state.theme = v.theme;
+      if (typeof v.themeFollowsSystem === "boolean") state.themeFollowsSystem = v.themeFollowsSystem;
+      if (v.sizeMode === "logical" || v.sizeMode === "allocated") state.sizeMode = v.sizeMode;
+      if (v.colorMode === "type" || v.colorMode === "heat") state.colorMode = v.colorMode;
+      if (v.sort) state.sort = v.sort;
+    }
   } catch {}
   // Apply visible state to controls.
   elModeAlloc.classList.toggle("active", state.sizeMode === "allocated");
@@ -2192,6 +2203,24 @@ function loadConfig() {
   elHeatBtn.setAttribute("aria-pressed", state.colorMode === "heat" ? "true" : "false");
   treemap.setMode(state.colorMode);
 }
+
+/** Load settings from the portable on-disk config file (written next to the
+ *  exe, or %APPDATA%\Treelens as a fallback). Falls back to the localStorage
+ *  cache if the disk read is empty or the backend is unavailable. */
+async function loadConfig() {
+  let raw: string | null = null;
+  try {
+    const disk = await ipc.loadConfig();
+    if (disk && disk.trim()) raw = disk;
+  } catch {}
+  if (!raw) {
+    try {
+      raw = localStorage.getItem(CONFIG_KEY);
+    } catch {}
+  }
+  applyConfig(raw);
+}
+
 function saveConfig() {
   const v: Partial<UiState> = {
     theme: state.theme,
@@ -2200,7 +2229,10 @@ function saveConfig() {
     colorMode: state.colorMode,
     sort: state.sort,
   };
-  try { localStorage.setItem(CONFIG_KEY, JSON.stringify(v)); } catch {}
+  const json = JSON.stringify(v);
+  // Fast local cache (sync) + durable portable file (async, best-effort).
+  try { localStorage.setItem(CONFIG_KEY, json); } catch {}
+  ipc.saveConfig(json).catch(() => {});
 }
 
 // ---------- helpers ----------

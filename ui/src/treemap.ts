@@ -41,6 +41,12 @@ export class Treemap {
   private dpr = 1;
   private widthCss = 0;
   private heightCss = 0;
+  // Offscreen cache of the static treemap (all rects + labels). Hover/selection
+  // just blit this and stroke an overlay, so a mousemove no longer re-renders
+  // thousands of rects, gradients, and text every frame.
+  private baseCanvas: HTMLCanvasElement;
+  private baseCtx: CanvasRenderingContext2D;
+  private baseReady = false;
 
   constructor(canvas: HTMLCanvasElement, theme: TreemapTheme, interactions: TreemapInteractions) {
     this.canvas = canvas;
@@ -49,6 +55,10 @@ export class Treemap {
     const ctx = canvas.getContext("2d", { alpha: false });
     if (!ctx) throw new Error("2D context unavailable");
     this.ctx = ctx;
+    this.baseCanvas = document.createElement("canvas");
+    const bctx = this.baseCanvas.getContext("2d", { alpha: false });
+    if (!bctx) throw new Error("2D context unavailable");
+    this.baseCtx = bctx;
     canvas.addEventListener("mousemove", this.handleMouseMove);
     canvas.addEventListener("mouseleave", this.handleMouseLeave);
     canvas.addEventListener("click", this.handleClick);
@@ -58,10 +68,12 @@ export class Treemap {
 
   setTheme(theme: TreemapTheme) {
     this.theme = theme;
+    this.renderBase();
     this.draw();
   }
   setMode(mode: ColorMode) {
     this.mode = mode;
+    this.renderBase();
     this.draw();
   }
   setSelected(idx: number | null) {
@@ -73,6 +85,7 @@ export class Treemap {
     this.rootIdx = rootIdx;
     this.nameOf = nameOf;
     this.hoverIdx = null;
+    this.renderBase();
     this.draw();
   }
 
@@ -85,6 +98,9 @@ export class Treemap {
     this.canvas.height = Math.floor(cssHeight * this.dpr);
     this.canvas.style.width = cssWidth + "px";
     this.canvas.style.height = cssHeight + "px";
+    this.baseCanvas.width = this.canvas.width;
+    this.baseCanvas.height = this.canvas.height;
+    this.renderBase();
     this.draw();
   }
 
@@ -101,8 +117,14 @@ export class Treemap {
     return null;
   }
 
-  draw() {
-    const ctx = this.ctx;
+  /** Render the static treemap (every rect + label) into the offscreen cache.
+   *  Called only when the data, theme, mode, or size changes — never on hover. */
+  private renderBase() {
+    if (this.baseCanvas.width === 0 || this.baseCanvas.height === 0) {
+      this.baseReady = false;
+      return;
+    }
+    const ctx = this.baseCtx;
     ctx.save();
     ctx.scale(this.dpr, this.dpr);
     ctx.fillStyle = this.theme.bgColor;
@@ -155,7 +177,25 @@ export class Treemap {
         }
       }
     }
+    ctx.restore();
+    this.baseReady = true;
+  }
 
+  /** Composite the cached static layer + the hover/selection overlay. Cheap —
+   *  this is what runs on every mousemove and selection change. */
+  draw() {
+    const ctx = this.ctx;
+    // Blit the cached base in device pixels (1:1, no scaling).
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    if (this.baseReady) {
+      ctx.drawImage(this.baseCanvas, 0, 0);
+    } else {
+      ctx.fillStyle = this.theme.bgColor;
+      ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    }
+
+    ctx.save();
+    ctx.scale(this.dpr, this.dpr);
     // Hover/selection overlay.
     if (this.hoverIdx !== null) {
       const r = this.rects.find((rr) => rr.idx === this.hoverIdx);
