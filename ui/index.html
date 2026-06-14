@@ -24,9 +24,13 @@
           <span class="hint">No scan yet. Pick a drive or folder to begin.</span>
         </div>
         <div class="toolbar-actions">
-          <button class="btn primary" id="scan-btn" title="Scan a drive or folder">
-            <span class="kbd-prefix">⌕</span> Scan…
-          </button>
+          <span class="scan-group">
+            <button class="btn primary" id="scan-btn" title="Scan a drive or folder">
+              <span class="kbd-prefix">⌕</span> Scan…
+            </button>
+            <button class="btn primary caret" id="recents-btn" title="Recent scans" aria-label="Recent scans" aria-haspopup="true">▾</button>
+            <div class="recents-menu" id="recents-menu" hidden></div>
+          </span>
           <button class="btn" id="rescan-btn" title="Rescan the current root" disabled>↻</button>
           <button class="btn" id="open-scan-btn" title="Open a saved .treelens scan">📂 Open</button>
           <button class="btn" id="new-folder-btn" title="Create a new folder in the current folder" disabled>＋ Folder</button>

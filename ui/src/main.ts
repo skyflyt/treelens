@@ -44,6 +44,8 @@ interface UiState {
   excludes: string[];
   /** Max treemap nesting depth to render (2–6). */
   treemapDepth: number;
+  /** Recently scanned roots, most-recent-first (persisted). */
+  recents: string[];
 }
 
 const state: UiState = {
@@ -63,11 +65,14 @@ const state: UiState = {
   themeFollowsSystem: true,
   excludes: [],
   treemapDepth: 4,
+  recents: [],
 };
 
 function prefersDark(): boolean {
   return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
 }
+
+const RECENTS_MAX = 10;
 
 // ---------- tabs ----------
 // Each tab owns an independent scan (its tree lives in the Rust backend, keyed
@@ -226,6 +231,8 @@ const elExportBtn = $("#export-btn");
 const elDupesBtn = $("#dupes-btn");
 const elSaveScanBtn = $("#save-scan-btn");
 const elOpenScanBtn = $("#open-scan-btn");
+const elRecentsBtn = $("#recents-btn");
+const elRecentsMenu = $("#recents-menu");
 const elModeAlloc = $("#mode-allocated");
 const elModeLogical = $("#mode-logical");
 const elHeatBtn = $("#heat-btn");
@@ -318,6 +325,15 @@ const treemap = new Treemap(
   });
   elSaveScanBtn.addEventListener("click", () => saveCurrentScan());
   elOpenScanBtn.addEventListener("click", () => openSavedScan());
+  elRecentsBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleRecentsMenu();
+  });
+  document.addEventListener("click", (e) => {
+    if (!elRecentsMenu.hidden && !(e.target as HTMLElement).closest(".scan-group")) {
+      elRecentsMenu.hidden = true;
+    }
+  });
   elScanCancel.addEventListener("click", () => {
     ipc.scanCancel().catch(() => {});
   });
@@ -566,6 +582,7 @@ function handleScanStalled(tab: number) {
 
 function startScan(rootPath: string) {
   const tab = activeTabId;
+  pushRecent(rootPath);
   state.scanning = true;
   state.scanRoot = null;
   state.currentRoot = null;
@@ -1283,6 +1300,58 @@ async function exportCurrentTree() {
   } catch (e) {
     elStatusSummary.textContent = `Export failed: ${(e as Error)?.message ?? e}`;
   }
+}
+
+// ---------- recent scans ----------
+
+function pushRecent(path: string) {
+  const p = path.replace(/[\\/]+$/, "");
+  if (!p) return;
+  // Case-insensitive dedupe (Windows paths), most-recent-first, capped.
+  state.recents = [p, ...state.recents.filter((x) => x.toLowerCase() !== p.toLowerCase())].slice(
+    0,
+    RECENTS_MAX,
+  );
+  saveConfig();
+}
+
+function toggleRecentsMenu() {
+  if (!elRecentsMenu.hidden) {
+    elRecentsMenu.hidden = true;
+    return;
+  }
+  elRecentsMenu.innerHTML = "";
+  if (state.recents.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "recents-empty muted small";
+    empty.textContent = "No recent scans yet.";
+    elRecentsMenu.appendChild(empty);
+  } else {
+    for (const p of state.recents) {
+      const item = document.createElement("button");
+      item.className = "recents-item";
+      item.type = "button";
+      item.title = p;
+      const seg = p.split(/[\\/]/).pop() || p;
+      item.innerHTML = `<span class="recents-name">${escapeHtml(seg)}</span><span class="recents-path">${escapeHtml(p)}</span>`;
+      item.addEventListener("click", () => {
+        elRecentsMenu.hidden = true;
+        startScan(p);
+      });
+      elRecentsMenu.appendChild(item);
+    }
+    const clear = document.createElement("button");
+    clear.className = "recents-item recents-clear";
+    clear.type = "button";
+    clear.textContent = "Clear recent scans";
+    clear.addEventListener("click", () => {
+      state.recents = [];
+      saveConfig();
+      elRecentsMenu.hidden = true;
+    });
+    elRecentsMenu.appendChild(clear);
+  }
+  elRecentsMenu.hidden = false;
 }
 
 // ---------- save / open scan ----------
@@ -2416,6 +2485,8 @@ function applyConfig(raw: string | null) {
       if (Array.isArray(v.excludes)) state.excludes = v.excludes.filter((x) => typeof x === "string");
       if (typeof v.treemapDepth === "number")
         state.treemapDepth = Math.min(6, Math.max(2, Math.round(v.treemapDepth)));
+      if (Array.isArray(v.recents))
+        state.recents = v.recents.filter((x) => typeof x === "string").slice(0, RECENTS_MAX);
     }
   } catch {}
   // Apply visible state to controls.
@@ -2451,6 +2522,7 @@ function saveConfig() {
     sort: state.sort,
     excludes: state.excludes,
     treemapDepth: state.treemapDepth,
+    recents: state.recents,
   };
   const json = JSON.stringify(v);
   // Fast local cache (sync) + durable portable file (async, best-effort).

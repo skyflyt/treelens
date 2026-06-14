@@ -600,6 +600,62 @@ body {
   flex: 1;
 }
 
+/* recent scans dropdown */
+.scan-group { position: relative; display: inline-flex; }
+.btn.primary.caret {
+  padding-left: 6px;
+  padding-right: 6px;
+  margin-left: 1px;
+  font-size: 10px;
+}
+.recents-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 280px;
+  max-width: 460px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  padding: 4px;
+  z-index: 50;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.recents-empty { padding: 10px 12px; }
+.recents-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.recents-item:hover { background: var(--row-hover); }
+.recents-name { font-size: 12.5px; }
+.recents-path {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+.recents-clear {
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 /* treemap depth control + legend */
 .treemap-depth {
   position: absolute;
