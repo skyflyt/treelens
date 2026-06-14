@@ -20,7 +20,7 @@ import {
 } from "./ipc";
 import { Treemap, type TreemapTheme } from "./treemap";
 import { fmtBytes, fmtCount, fmtDuration, fmtMtime } from "./format";
-import { type ColorMode } from "./colors";
+import { type ColorMode, hsl } from "./colors";
 import { pickScanRoot } from "./drives";
 
 declare const __APP_VERSION__: string;
@@ -42,6 +42,8 @@ interface UiState {
   themeFollowsSystem: boolean;
   /** Glob patterns excluded from scans (persisted; edited in Settings). */
   excludes: string[];
+  /** Max treemap nesting depth to render (2–6). */
+  treemapDepth: number;
 }
 
 const state: UiState = {
@@ -60,6 +62,7 @@ const state: UiState = {
   theme: prefersDark() ? "dark" : "light",
   themeFollowsSystem: true,
   excludes: [],
+  treemapDepth: 4,
 };
 
 function prefersDark(): boolean {
@@ -172,6 +175,7 @@ async function switchToTab(id: number) {
   (elExportBtn as HTMLButtonElement).disabled = state.currentRoot === null;
   (elDupesBtn as HTMLButtonElement).disabled = state.currentRoot === null;
   (elSaveScanBtn as HTMLButtonElement).disabled = state.scanRoot === null;
+  updateTreemapChrome();
 }
 
 async function newTab() {
@@ -251,6 +255,9 @@ const elSearchList = $("#search-list");
 const elSearchMinSize = $<HTMLSelectElement>("#search-minsize");
 const elTypesList = $("#types-list");
 const elContentsFilter = $<HTMLInputElement>("#contents-filter");
+const elDepthCtl = $("#treemap-depth-ctl");
+const elDepthVal = $("#depth-val");
+const elTreemapLegend = $("#treemap-legend");
 
 const treemap = new Treemap(
   elTreemap,
@@ -324,6 +331,7 @@ const treemap = new Treemap(
     state.colorMode = state.colorMode === "heat" ? "type" : "heat";
     elHeatBtn.setAttribute("aria-pressed", state.colorMode === "heat" ? "true" : "false");
     treemap.setMode(state.colorMode);
+    renderLegend();
     saveConfig();
   });
 
@@ -365,6 +373,11 @@ const treemap = new Treemap(
   setupSearch();
   setupColumnSort();
   $("#help-btn").addEventListener("click", () => toggleHelp());
+
+  // Treemap depth control.
+  $("#depth-dec").addEventListener("click", () => setTreemapDepth(state.treemapDepth - 1));
+  $("#depth-inc").addEventListener("click", () => setTreemapDepth(state.treemapDepth + 1));
+  elDepthVal.textContent = String(state.treemapDepth);
 
   // Live Contents filter — client-side, instant, no IPC.
   elContentsFilter.addEventListener("input", () => {
@@ -655,6 +668,7 @@ async function handleScanComplete(p: {
   }
   elStatusSummary.textContent =
     `${fmtCount(p.files)} files · ${fmtCount(p.dirs)} folders · ${fmtBytes(p.bytes)} · scanned in ${fmtDuration(p.duration_ms)}`;
+  updateTreemapChrome();
 }
 
 function handleScanCancelled(p: { tab: number }) {
@@ -1097,7 +1111,7 @@ async function refreshTreemap(seq: number = drillSeq) {
   if (state.currentRoot === null) return;
   const rect = elTreemapPane.getBoundingClientRect();
   const minPx = 3;
-  const maxDepth = 4;
+  const maxDepth = state.treemapDepth;
   const rects = await ipc.treemapLayout(
     state.currentRoot,
     rect.width,
@@ -1594,6 +1608,70 @@ function renderRow(row: DirRow, depth: number = 0): HTMLElement {
   return el;
 }
 
+// ---------- treemap chrome (depth + legend) ----------
+
+function setTreemapDepth(d: number) {
+  const next = Math.min(6, Math.max(2, d));
+  if (next === state.treemapDepth) return;
+  state.treemapDepth = next;
+  elDepthVal.textContent = String(next);
+  saveConfig();
+  if (state.currentRoot !== null) refreshTreemap(++drillSeq);
+}
+
+// Representative categories for the type-mode legend (hue matches colors.ts).
+const LEGEND_TYPES: { label: string; hue: number }[] = [
+  { label: "Code", hue: 215 },
+  { label: "Docs", hue: 200 },
+  { label: "Data", hue: 100 },
+  { label: "Images", hue: 75 },
+  { label: "Audio", hue: 145 },
+  { label: "Video", hue: 285 },
+  { label: "Archives", hue: 32 },
+  { label: "Binaries", hue: 0 },
+];
+
+function renderLegend() {
+  const dark = state.theme === "dark";
+  if (state.colorMode === "heat") {
+    const stops = [
+      { c: hsl(0, 0.65, dark ? 0.5 : 0.6), t: "new" },
+      { c: hsl(60, 0.65, dark ? 0.5 : 0.6), t: "~6mo" },
+      { c: hsl(120, 0.65, dark ? 0.5 : 0.6), t: "~1yr" },
+      { c: hsl(220, 0.65, dark ? 0.5 : 0.6), t: "old" },
+    ];
+    elTreemapLegend.innerHTML =
+      `<span class="legend-title">Age</span>` +
+      stops
+        .map(
+          (s) =>
+            `<span class="legend-item"><span class="legend-swatch" style="background:${s.c}"></span>${s.t}</span>`,
+        )
+        .join("");
+    return;
+  }
+  const s = dark ? 0.5 : 0.55;
+  const l = dark ? 0.48 : 0.62;
+  elTreemapLegend.innerHTML =
+    `<span class="legend-title">Type</span>` +
+    LEGEND_TYPES.map(
+      (c) =>
+        `<span class="legend-item"><span class="legend-swatch" style="background:${hsl(
+          c.hue,
+          s,
+          l,
+        )}"></span>${c.label}</span>`,
+    ).join("");
+}
+
+/** Show/hide the depth control + legend depending on whether a treemap is up. */
+function updateTreemapChrome() {
+  const show = state.currentRoot !== null && !state.scanning;
+  elDepthCtl.hidden = !show;
+  elTreemapLegend.hidden = !show;
+  if (show) renderLegend();
+}
+
 // ---------- size mode + theme ----------
 
 function setSizeMode(mode: SizeMode) {
@@ -1651,6 +1729,7 @@ function renderEmptyState() {
   } else {
     elTreemapEmpty.hidden = true;
   }
+  updateTreemapChrome();
 }
 
 // ---------- tooltip ----------
@@ -2335,6 +2414,8 @@ function applyConfig(raw: string | null) {
       if (v.colorMode === "type" || v.colorMode === "heat") state.colorMode = v.colorMode;
       if (v.sort) state.sort = v.sort;
       if (Array.isArray(v.excludes)) state.excludes = v.excludes.filter((x) => typeof x === "string");
+      if (typeof v.treemapDepth === "number")
+        state.treemapDepth = Math.min(6, Math.max(2, Math.round(v.treemapDepth)));
     }
   } catch {}
   // Apply visible state to controls.
@@ -2369,6 +2450,7 @@ function saveConfig() {
     colorMode: state.colorMode,
     sort: state.sort,
     excludes: state.excludes,
+    treemapDepth: state.treemapDepth,
   };
   const json = JSON.stringify(v);
   // Fast local cache (sync) + durable portable file (async, best-effort).

@@ -64,6 +64,7 @@ export class Treemap {
     canvas.addEventListener("click", this.handleClick);
     canvas.addEventListener("dblclick", this.handleDblClick);
     canvas.addEventListener("contextmenu", this.handleContext);
+    canvas.addEventListener("keydown", this.handleKeyDown);
   }
 
   setTheme(theme: TreemapTheme) {
@@ -256,6 +257,58 @@ export class Treemap {
     const { left, top } = this.canvas.getBoundingClientRect();
     const r = this.hitTest(e.clientX - left, e.clientY - top);
     if (r) this.interactions.onContextMenu(r, e.clientX, e.clientY);
+  };
+
+  /** Arrow keys move the selection to the spatially nearest rect in that
+   *  direction; Enter drills into the selected rect. Makes the treemap usable
+   *  without a mouse. */
+  private handleKeyDown = (e: KeyboardEvent) => {
+    const dirs: Record<string, [number, number]> = {
+      ArrowLeft: [-1, 0],
+      ArrowRight: [1, 0],
+      ArrowUp: [0, -1],
+      ArrowDown: [0, 1],
+    };
+    if (e.key === "Enter") {
+      const r = this.rects.find((rr) => rr.idx === this.selectedIdx);
+      if (r) {
+        e.preventDefault();
+        this.interactions.onDoubleClick(r);
+      }
+      return;
+    }
+    const dir = dirs[e.key];
+    if (!dir) return;
+    e.preventDefault();
+    const selectable = this.rects.filter((r) => r.idx !== this.rootIdx);
+    if (selectable.length === 0) return;
+    const cur = selectable.find((r) => r.idx === this.selectedIdx);
+    if (!cur) {
+      this.interactions.onClick(selectable[0]);
+      return;
+    }
+    const cx = cur.x + cur.w / 2;
+    const cy = cur.y + cur.h / 2;
+    let best: Rect | null = null;
+    let bestScore = Infinity;
+    for (const r of selectable) {
+      if (r.idx === cur.idx) continue;
+      const rx = r.x + r.w / 2;
+      const ry = r.y + r.h / 2;
+      const dx = rx - cx;
+      const dy = ry - cy;
+      // Must lie predominantly in the requested direction.
+      const along = dx * dir[0] + dy * dir[1];
+      if (along <= 0) continue;
+      const perp = Math.abs(dx * dir[1] + dy * dir[0]);
+      // Prefer small perpendicular offset, then nearest along the axis.
+      const score = along + perp * 2;
+      if (score < bestScore) {
+        bestScore = score;
+        best = r;
+      }
+    }
+    if (best) this.interactions.onClick(best);
   };
 }
 

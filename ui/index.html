@@ -68,6 +68,13 @@
         <section class="treemap-pane" id="treemap-pane">
           <canvas id="treemap" tabindex="0"></canvas>
           <div id="treemap-tooltip" class="tooltip" hidden></div>
+          <div class="treemap-depth" id="treemap-depth-ctl" hidden>
+            <span class="muted small">Depth</span>
+            <button class="btn icon tiny" id="depth-dec" title="Show fewer levels" aria-label="Fewer levels">−</button>
+            <span id="depth-val" aria-live="polite">4</span>
+            <button class="btn icon tiny" id="depth-inc" title="Show more levels" aria-label="More levels">+</button>
+          </div>
+          <div class="treemap-legend" id="treemap-legend" hidden></div>
           <div id="treemap-empty" class="empty-state">
             <div class="empty-card">
               <h2>Treelens</h2>
