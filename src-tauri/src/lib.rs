@@ -456,6 +456,31 @@ fn search(
     Ok(hits)
 }
 
+/// Aggregate file sizes/counts by extension across the subtree under `root`.
+#[tauri::command]
+fn extension_breakdown(
+    tab: u32,
+    root: u32,
+    size_mode: String,
+    limit: usize,
+    state: State<'_, AppState>,
+) -> Result<Vec<tree::ExtStat>, CommandError> {
+    let _timer = TimedSpan::new("extension_breakdown");
+    with_tree(state.inner(), tab, |tree| {
+        if root as usize >= tree.nodes.len() {
+            return Err(CommandError {
+                message: format!("invalid root {root}"),
+            });
+        }
+        Ok(tree::extension_breakdown(
+            tree,
+            root,
+            parse_mode(&size_mode),
+            limit.clamp(1, 1000),
+        ))
+    })
+}
+
 /// Export the subtree under `root` to `dest` as CSV or JSON. Walks iteratively
 /// and streams rows to a buffered writer so even a whole-drive tree exports
 /// without building a giant in-memory string. Returns the number of rows written.
@@ -1518,6 +1543,7 @@ pub fn run() {
             breadcrumb,
             node_summary,
             search,
+            extension_breakdown,
             export_tree,
             find_duplicates,
             load_config,

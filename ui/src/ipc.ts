@@ -48,6 +48,12 @@ export interface BreadcrumbEntry {
   name: string;
 }
 
+export interface ExtStat {
+  ext: string;
+  size: number;
+  count: number;
+}
+
 export type SearchKind = "all" | "files" | "dirs";
 
 export interface SearchHit {
@@ -256,6 +262,9 @@ export const ipc = {
   },
   nodeSummary(idx: number) {
     return invoke<NodeSummary>("node_summary", { tab: activeTab, idx });
+  },
+  extensionBreakdown(root: number, sizeMode: SizeMode, limit: number) {
+    return invoke<ExtStat[]>("extension_breakdown", { tab: activeTab, root, sizeMode, limit });
   },
   search(
     root: number,

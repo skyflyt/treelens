@@ -539,6 +539,56 @@ pub fn search(tree: &Tree, root_idx: u32, opts: &SearchOpts, mode: SizeMode) -> 
         .collect()
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtStat {
+    /// Lowercased extension without the dot (e.g. "png"), or "(none)".
+    pub ext: String,
+    pub size: u64,
+    pub count: u64,
+}
+
+/// Aggregate file sizes and counts by extension across the subtree rooted at
+/// `root_idx`. Directories and reparse points are ignored. Returns the largest
+/// `limit` extensions by size, biggest first.
+pub fn extension_breakdown(
+    tree: &Tree,
+    root_idx: u32,
+    mode: SizeMode,
+    limit: usize,
+) -> Vec<ExtStat> {
+    use std::collections::HashMap;
+    let mut by_ext: HashMap<String, (u64, u64)> = HashMap::new();
+    walk_subtree(tree, root_idx, &mut |_idx, node| {
+        if node.is_dir() || node.is_reparse() {
+            return;
+        }
+        let size = match mode {
+            SizeMode::Allocated => node.allocated,
+            SizeMode::Logical => node.logical,
+        };
+        let ext = ext_of(&node.name);
+        let e = by_ext.entry(ext).or_insert((0, 0));
+        e.0 = e.0.saturating_add(size);
+        e.1 += 1;
+    });
+    let mut out: Vec<ExtStat> = by_ext
+        .into_iter()
+        .map(|(ext, (size, count))| ExtStat { ext, size, count })
+        .collect();
+    out.sort_unstable_by(|a, b| b.size.cmp(&a.size).then_with(|| a.ext.cmp(&b.ext)));
+    out.truncate(limit.max(1));
+    out
+}
+
+/// Extract a lowercased extension (no dot) from a file name, or "(none)".
+/// A leading-dot name with no other dot ("`.gitignore`") counts as no extension.
+fn ext_of(name: &str) -> String {
+    match name.rfind('.') {
+        Some(pos) if pos > 0 && pos + 1 < name.len() => name[pos + 1..].to_ascii_lowercase(),
+        _ => "(none)".to_string(),
+    }
+}
+
 /// A directory is a "passthrough" if a single child accounts for ≥95% of its
 /// size — meaning the directory itself adds essentially nothing over its child.
 /// We hide passthroughs from top_dirs in favor of the child that's doing the
@@ -937,6 +987,37 @@ mod tests {
         let dirs = search(&t, 0, &opts, SizeMode::Logical);
         assert_eq!(dirs.len(), 1);
         assert_eq!(dirs[0].name, "sub");
+    }
+
+    #[test]
+    fn extension_breakdown_groups_by_ext() {
+        // root/ a.bin(100) b.bin(300) sub/c.bin(50)  — all .bin
+        let t = flat();
+        let stats = extension_breakdown(&t, 0, SizeMode::Logical, 10);
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].ext, "bin");
+        assert_eq!(stats[0].size, 450);
+        assert_eq!(stats[0].count, 3);
+    }
+
+    #[test]
+    fn extension_breakdown_mixed_and_none() {
+        let records = vec![
+            rec(0, "root", u32::MAX, 0, true),
+            rec(1, "a.png", 0, 100, false),
+            rec(2, "b.PNG", 0, 200, false), // case-insensitive → same bucket
+            rec(3, "readme", 0, 30, false), // no extension
+            rec(4, ".gitignore", 0, 10, false), // leading dot only → (none)
+        ];
+        let t = Tree::build(records);
+        let stats = extension_breakdown(&t, 0, SizeMode::Logical, 10);
+        // png: 300 (2 files); (none): 40 (readme + .gitignore)
+        assert_eq!(stats[0].ext, "png");
+        assert_eq!(stats[0].size, 300);
+        assert_eq!(stats[0].count, 2);
+        let none = stats.iter().find(|s| s.ext == "(none)").unwrap();
+        assert_eq!(none.size, 40);
+        assert_eq!(none.count, 2);
     }
 
     #[test]

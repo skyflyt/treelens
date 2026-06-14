@@ -91,6 +91,7 @@
           <nav class="side-tabs" role="tablist">
             <button class="tab active" data-tab="contents" role="tab">Contents</button>
             <button class="tab" data-tab="search" role="tab">Search</button>
+            <button class="tab" data-tab="types" role="tab">Types</button>
             <button class="tab" data-tab="topfiles" role="tab">Top files</button>
             <button class="tab" data-tab="topdirs" role="tab">Top folders</button>
             <button class="tab" data-tab="inspect" role="tab">Inspect</button>
@@ -140,6 +141,16 @@
               </div>
               <div class="list-viewport" id="search-list">
                 <div class="search-hint muted small">Type to search the current folder and everything under it.</div>
+              </div>
+            </div>
+            <div class="tab-pane" id="tab-types">
+              <div class="list-header types-header">
+                <span class="col col-name">Type</span>
+                <span class="col col-size">Size</span>
+                <span class="col col-count">Files</span>
+              </div>
+              <div class="list-viewport" id="types-list">
+                <div class="search-hint muted small">File-type breakdown for the current folder.</div>
               </div>
             </div>
             <div class="tab-pane" id="tab-topfiles">

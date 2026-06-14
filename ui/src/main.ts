@@ -10,6 +10,7 @@ import {
   onScanProgress,
   setActiveTab,
   type DirRow,
+  type ExtStat,
   type Rect,
   type SearchHit,
   type SearchKind,
@@ -245,6 +246,7 @@ const elInspector = $("#inspector");
 const elSearchInput = $<HTMLInputElement>("#search-input");
 const elSearchList = $("#search-list");
 const elSearchMinSize = $<HTMLSelectElement>("#search-minsize");
+const elTypesList = $("#types-list");
 
 const treemap = new Treemap(
   elTreemap,
@@ -350,6 +352,7 @@ const treemap = new Treemap(
       document.querySelectorAll(".tab-pane").forEach((x) => x.classList.toggle("active", x.id === `tab-${tab}`));
       if (tab === "inspect") refreshInspector();
       if (tab === "search") elSearchInput.focus();
+      if (tab === "types") refreshExtensions();
     });
   });
 
@@ -1042,7 +1045,10 @@ async function refreshAll(seq: number = drillSeq) {
   const treemapP = refreshTreemap(seq).catch((e) => console.error("treemap", e));
   const dirListP = refreshDirList(seq).catch((e) => console.error("dirList", e));
   const topNP = refreshTopN(seq).catch((e) => console.error("topN", e));
-  await Promise.all([breadcrumbP, treemapP, dirListP, topNP]);
+  const typesP = typesTabActive()
+    ? refreshExtensions(seq).catch((e) => console.error("types", e))
+    : Promise.resolve();
+  await Promise.all([breadcrumbP, treemapP, dirListP, topNP, typesP]);
 }
 
 async function refreshBreadcrumb(seq: number = drillSeq) {
@@ -1278,6 +1284,42 @@ function updateSortIndicators() {
   });
 }
 
+// ---------- file-type breakdown ----------
+
+function typesTabActive(): boolean {
+  return !!document.querySelector("#tab-types.active");
+}
+
+async function refreshExtensions(seq: number = drillSeq) {
+  if (state.currentRoot === null) return;
+  let stats: ExtStat[];
+  try {
+    stats = await ipc.extensionBreakdown(state.currentRoot, state.sizeMode, 200);
+  } catch {
+    return;
+  }
+  if (seq !== drillSeq) return;
+  if (stats.length === 0) {
+    elTypesList.innerHTML = '<div class="search-hint muted small">No files here.</div>';
+    return;
+  }
+  const max = stats[0].size || 1;
+  const frag = document.createDocumentFragment();
+  for (const s of stats) {
+    const row = document.createElement("div");
+    row.className = "list-row types-row";
+    const pct = Math.max(2, Math.round((s.size / max) * 100));
+    row.innerHTML =
+      `<span class="col col-name"><span class="ext-bar" style="width:${pct}%"></span>` +
+      `<span class="ext-name">${escapeHtml(s.ext)}</span></span>` +
+      `<span class="col col-size">${escapeHtml(fmtBytes(s.size))}</span>` +
+      `<span class="col col-count">${escapeHtml(fmtCount(s.count))}</span>`;
+    frag.appendChild(row);
+  }
+  elTypesList.innerHTML = "";
+  elTypesList.appendChild(frag);
+}
+
 // ---------- search ----------
 
 let searchKind: SearchKind = "all";
@@ -1482,7 +1524,10 @@ async function refreshSizeSensitive(seq: number = drillSeq) {
   const treemapP = refreshTreemap(seq).catch((e) => console.error("treemap", e));
   const dirListP = refreshDirList(seq).catch((e) => console.error("dirList", e));
   const topNP = refreshTopN(seq).catch((e) => console.error("topN", e));
-  await Promise.all([treemapP, dirListP, topNP]);
+  const typesP = typesTabActive()
+    ? refreshExtensions(seq).catch((e) => console.error("types", e))
+    : Promise.resolve();
+  await Promise.all([treemapP, dirListP, topNP, typesP]);
 }
 
 function themeForCanvas(): TreemapTheme {
