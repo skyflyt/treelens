@@ -152,6 +152,7 @@ export interface CompareResult {
   size_a: number;
   size_b: number;
   first_diff_offset: number | null;
+  length_only_diff: boolean;
   sha256_a: string;
   sha256_b: string;
 }

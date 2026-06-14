@@ -1640,7 +1640,9 @@ async function refreshInspector() {
           ? "✓ Identical (same SHA-256)"
           : r.first_diff_offset !== null
             ? `✗ Differ — first difference at byte ${r.first_diff_offset.toLocaleString()}`
-            : `✗ Differ — sizes ${fmtBytes(r.size_a)} vs ${fmtBytes(r.size_b)}`;
+            : r.length_only_diff
+              ? `✗ Differ — same content, one is longer (${fmtBytes(r.size_a)} vs ${fmtBytes(r.size_b)})`
+              : `✗ Differ — sizes ${fmtBytes(r.size_a)} vs ${fmtBytes(r.size_b)}`;
         showResultsModal("Compare result", [
           { label: note, sub: "" },
           { label: `A: ${compareMarkName}`, sub: `${fmtBytes(r.size_a)} · ${r.sha256_a}` },

@@ -200,10 +200,10 @@ mod lsb {
             };
         }
 
-        // Statistical advisory: chi-square "pairs of values" test. Never sets
-        // `suspicious` (it's not recoverable / can false-positive); it only
-        // raises the advisory flag.
-        let v = chi_square_verdict(&rgb);
+        // Statistical advisory: windowed chi-square "pairs of values" test.
+        // Never sets `suspicious` (it's not recoverable / can false-positive);
+        // it only raises the advisory flag.
+        let v = chi_square_windowed(&rgb);
         ScanFinding {
             method: Method::Lsb,
             suspicious: false,
@@ -216,6 +216,38 @@ mod lsb {
             },
             recoverable_bytes: None,
         }
+    }
+
+    /// Run the chi-square pairs test over sliding windows of the carrier and
+    /// take the strongest anomalous window. A payload embedded into only part of
+    /// an image (the common case — sequential embedding fills from the top and
+    /// stops) barely moves the *global* histogram, so a whole-image test misses
+    /// it; a window that lands inside the embedded region is fully equalized and
+    /// trips. Falls back to a single pass for carriers smaller than one window.
+    fn chi_square_windowed(rgb: &[u8]) -> Verdict {
+        // 64 KiB windows: large enough that each value-pair carries enough mass
+        // (~256 samples/pair) for the noise floor to sit well below a natural
+        // image's pair imbalance, so a clean image doesn't false-positive while
+        // a window sitting inside a random-LSB region (imbalance ≈ noise floor)
+        // still trips.
+        const WIN: usize = 64 * 1024;
+        if rgb.len() < WIN {
+            return chi_square_verdict(rgb);
+        }
+        let mut best = Verdict {
+            suspicious: false,
+            confidence: 0.0,
+        };
+        for chunk in rgb.chunks(WIN) {
+            if chunk.len() < 8192 {
+                continue; // tail too small to be meaningful
+            }
+            let v = chi_square_verdict(chunk);
+            if v.suspicious && v.confidence > best.confidence {
+                best = v;
+            }
+        }
+        best
     }
 
     /// Chi-square "pairs of values" attack (Westfeld–Pfitzmann). Sequential
@@ -294,8 +326,13 @@ mod whitespace {
     const BIT1: u8 = b'\t';
 
     /// Capacity: one bit per line (we append one whitespace char per line).
+    /// Counts lines the same way `embed` does — `split('\n')`, which yields one
+    /// carrier slot per newline-delimited segment (including a trailing empty
+    /// segment after a final newline). Using `lines()` here under-counted by
+    /// dropping that trailing segment, so the reported capacity disagreed with
+    /// what `embed` would actually accept.
     pub fn capacity_bytes(text: &str) -> u64 {
-        let lines = text.lines().count().max(1);
+        let lines = text.split('\n').count();
         ((lines / 8) as u64).saturating_sub(HEADER_LEN as u64)
     }
 
@@ -445,30 +482,191 @@ mod format_append {
     /// offset where trailing/appended data would begin, or None if the format
     /// isn't recognized (in which case appended data can't be distinguished
     /// from the file's own content).
+    ///
+    /// These walk the actual container structure rather than substring-searching
+    /// for the end marker. A naive search is wrong both ways: the marker bytes
+    /// (`IEND`, `FFD9`, `0x3B`) routinely occur inside compressed pixel/entropy
+    /// data, and they can also occur inside an appended payload — so neither a
+    /// forward nor a reverse substring search reliably finds the *real* logical
+    /// end. Parsing the structure pins it exactly.
     fn logical_end(bytes: &[u8]) -> Option<(usize, &'static str)> {
-        // PNG: ends with the IEND chunk: ... 00 00 00 00 'IEND' <crc:4>.
-        if bytes.len() > 8 && &bytes[0..8] == b"\x89PNG\r\n\x1a\n" {
-            if let Some(pos) = find_subsequence(bytes, b"IEND") {
-                // IEND chunk = 'IEND' + 4-byte CRC; logical end is pos+4+4.
-                let end = pos + 4 + 4;
-                if end <= bytes.len() {
-                    return Some((end, "PNG (after IEND)"));
+        if let Some(end) = png_logical_end(bytes) {
+            return Some((end, "PNG (after IEND)"));
+        }
+        if let Some(end) = jpeg_logical_end(bytes) {
+            return Some((end, "JPEG (after EOI)"));
+        }
+        if let Some(end) = gif_logical_end(bytes) {
+            return Some((end, "GIF (after trailer)"));
+        }
+        None
+    }
+
+    /// Walk PNG chunks (length:4 BE, type:4, data:len, crc:4) from the 8-byte
+    /// signature to the IEND chunk; the logical end is just past IEND's CRC.
+    fn png_logical_end(bytes: &[u8]) -> Option<usize> {
+        if bytes.len() < 8 || &bytes[0..8] != b"\x89PNG\r\n\x1a\n" {
+            return None;
+        }
+        let mut pos = 8usize;
+        loop {
+            // Need length(4) + type(4) before we can size the chunk.
+            if pos + 8 > bytes.len() {
+                return None; // truncated header
+            }
+            let len = u32::from_be_bytes([
+                bytes[pos],
+                bytes[pos + 1],
+                bytes[pos + 2],
+                bytes[pos + 3],
+            ]) as usize;
+            let ctype = &bytes[pos + 4..pos + 8];
+            // total chunk = len(4) + type(4) + data(len) + crc(4)
+            let chunk_end = pos.checked_add(12)?.checked_add(len)?;
+            if chunk_end > bytes.len() {
+                return None; // truncated/invalid
+            }
+            if ctype == b"IEND" {
+                return Some(chunk_end);
+            }
+            pos = chunk_end;
+        }
+    }
+
+    /// Walk JPEG markers from SOI (FFD8) to EOI (FFD9), stepping over segment
+    /// lengths and scanning entropy-coded data after each SOS for the next
+    /// marker (handling restart markers and progressive multi-scan files).
+    fn jpeg_logical_end(bytes: &[u8]) -> Option<usize> {
+        if bytes.len() < 2 || bytes[0] != 0xFF || bytes[1] != 0xD8 {
+            return None;
+        }
+        let mut pos = 2usize;
+        loop {
+            if pos + 1 >= bytes.len() {
+                return None;
+            }
+            if bytes[pos] != 0xFF {
+                return None; // desynced — not a clean JPEG
+            }
+            // Skip fill bytes (a run of 0xFF is allowed before a marker).
+            let mut mpos = pos + 1;
+            while mpos < bytes.len() && bytes[mpos] == 0xFF {
+                mpos += 1;
+            }
+            if mpos >= bytes.len() {
+                return None;
+            }
+            let marker = bytes[mpos];
+            pos = mpos + 1;
+            match marker {
+                0xD9 => return Some(pos),                 // EOI
+                0xD8 | 0x01 => continue,                  // SOI / TEM: no payload
+                0xD0..=0xD7 => continue,                  // RSTn: no payload
+                0xDA => {
+                    // SOS: 2-byte header length, then entropy data until next marker.
+                    if pos + 2 > bytes.len() {
+                        return None;
+                    }
+                    let seg_len =
+                        u16::from_be_bytes([bytes[pos], bytes[pos + 1]]) as usize;
+                    pos = pos.checked_add(seg_len)?;
+                    if pos > bytes.len() {
+                        return None;
+                    }
+                    while pos + 1 < bytes.len() {
+                        if bytes[pos] == 0xFF
+                            && bytes[pos + 1] != 0x00
+                            && !(0xD0..=0xD7).contains(&bytes[pos + 1])
+                        {
+                            break; // found the next marker
+                        }
+                        pos += 1;
+                    }
+                }
+                _ => {
+                    // Marker with a 2-byte length field.
+                    if pos + 2 > bytes.len() {
+                        return None;
+                    }
+                    let seg_len =
+                        u16::from_be_bytes([bytes[pos], bytes[pos + 1]]) as usize;
+                    if seg_len < 2 {
+                        return None;
+                    }
+                    pos = pos.checked_add(seg_len)?;
+                    if pos > bytes.len() {
+                        return None;
+                    }
                 }
             }
         }
-        // JPEG: starts FF D8, ends with EOI marker FF D9.
-        if bytes.len() > 2 && bytes[0] == 0xFF && bytes[1] == 0xD8 {
-            if let Some(pos) = rfind_subsequence(bytes, &[0xFF, 0xD9]) {
-                return Some((pos + 2, "JPEG (after EOI)"));
+    }
+
+    /// Walk GIF blocks from the header past the (optional) global color table,
+    /// over each extension / image-descriptor block's sub-blocks, to the 0x3B
+    /// trailer; logical end is just past it.
+    fn gif_logical_end(bytes: &[u8]) -> Option<usize> {
+        if bytes.len() < 13 || (&bytes[0..6] != b"GIF89a" && &bytes[0..6] != b"GIF87a") {
+            return None;
+        }
+        // Logical Screen Descriptor packed field is the 5th byte after the header.
+        let packed = bytes[10];
+        let mut pos = 13usize;
+        if packed & 0x80 != 0 {
+            let gct_entries = 1usize << (((packed & 0x07) + 1) as usize);
+            pos = pos.checked_add(3 * gct_entries)?;
+        }
+        loop {
+            if pos >= bytes.len() {
+                return None;
+            }
+            match bytes[pos] {
+                0x3B => return Some(pos + 1), // trailer
+                0x21 => {
+                    // Extension: introducer + label, then sub-blocks.
+                    pos = pos.checked_add(2)?;
+                    pos = gif_skip_sub_blocks(bytes, pos)?;
+                }
+                0x2C => {
+                    // Image descriptor: 10 bytes, optional local color table,
+                    // LZW min-code-size byte, then image data sub-blocks.
+                    if pos + 10 > bytes.len() {
+                        return None;
+                    }
+                    let lpacked = bytes[pos + 9];
+                    pos += 10;
+                    if lpacked & 0x80 != 0 {
+                        let lct_entries = 1usize << (((lpacked & 0x07) + 1) as usize);
+                        pos = pos.checked_add(3 * lct_entries)?;
+                    }
+                    if pos >= bytes.len() {
+                        return None;
+                    }
+                    pos += 1; // LZW minimum code size
+                    pos = gif_skip_sub_blocks(bytes, pos)?;
+                }
+                _ => return None, // unknown block
             }
         }
-        // GIF: ends with trailer 0x3B.
-        if bytes.len() > 6 && (&bytes[0..6] == b"GIF89a" || &bytes[0..6] == b"GIF87a") {
-            if let Some(pos) = bytes.iter().rposition(|&b| b == 0x3B) {
-                return Some((pos + 1, "GIF (after trailer)"));
+    }
+
+    /// Advance past a GIF sub-block list (each: length byte + data, terminated
+    /// by a zero-length block). Returns the offset just past the terminator.
+    fn gif_skip_sub_blocks(bytes: &[u8], mut pos: usize) -> Option<usize> {
+        loop {
+            if pos >= bytes.len() {
+                return None;
+            }
+            let n = bytes[pos] as usize;
+            pos += 1;
+            if n == 0 {
+                return Some(pos);
+            }
+            pos = pos.checked_add(n)?;
+            if pos > bytes.len() {
+                return None;
             }
         }
-        None
     }
 
     pub fn embed(src: &Path, out: &Path, payload: &[u8]) -> Result<()> {
@@ -542,18 +740,6 @@ mod format_append {
             },
         }
     }
-
-    fn find_subsequence(hay: &[u8], needle: &[u8]) -> Option<usize> {
-        hay.windows(needle.len()).position(|w| w == needle)
-    }
-    fn rfind_subsequence(hay: &[u8], needle: &[u8]) -> Option<usize> {
-        if needle.len() > hay.len() {
-            return None;
-        }
-        (0..=hay.len() - needle.len())
-            .rev()
-            .find(|&i| &hay[i..i + needle.len()] == needle)
-    }
 }
 
 // ============================== Public API ==============================
@@ -603,26 +789,25 @@ mod tests {
     use tempfile::tempdir;
 
     fn make_png(path: &Path, w: u32, h: u32) {
-        // A photo-like image: a smooth gradient base plus deterministic per-pixel
-        // noise (a simple LCG, no Math.random). This gives a *natural* histogram
-        // whose value-pairs are NOT equalized, so the chi-square detector treats
-        // it as clean — unlike a uniform gradient, which would be pathological.
+        // A clean baseline whose LSB plane is *structured*, not random: each
+        // channel is a peaked (triangular) draw forced to an even value, so the
+        // LSB is always 0. The chi-square pairs test keys on whether the counts
+        // of value 2i and 2i+1 have been equalized by LSB randomization; here
+        // every odd bin is empty, so pairs are maximally imbalanced and the
+        // image reads as clean. LSB-replacement embedding (random LSBs) is what
+        // equalizes the pairs and trips the detector — which is exactly the
+        // signal we want to isolate. (A smooth-but-noisy histogram would have
+        // near-equal adjacent bins and is a known false-positive mode for this
+        // family of detectors, so we don't model the clean image that way.)
         let mut img = image::RgbImage::new(w, h);
         let mut s: u32 = 0x1234_5678;
         let mut rng = || {
             s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             (s >> 24) as u8
         };
-        for (x, y, px) in img.enumerate_pixels_mut() {
-            let base_r = (x.wrapping_mul(3) % 200) as u8;
-            let base_g = (y.wrapping_mul(2) % 200) as u8;
-            let base_b = ((x + y) % 200) as u8;
-            // Add noise but keep it bounded so pairs stay naturally skewed.
-            *px = image::Rgb([
-                base_r.wrapping_add(rng() % 40),
-                base_g.wrapping_add(rng() % 40),
-                base_b.wrapping_add(rng() % 40),
-            ]);
+        let mut draw = || ((64u16 + (rng() as u16 % 32) + (rng() as u16 % 32)) & 0xFE) as u8;
+        for (_x, _y, px) in img.enumerate_pixels_mut() {
+            *px = image::Rgb([draw(), draw(), draw()]);
         }
         img.save(path).unwrap();
     }
@@ -767,5 +952,205 @@ mod tests {
             extract(Method::Whitespace, &f),
             Err(AnalysisError::NotFound)
         ));
+    }
+
+    #[test]
+    fn clean_large_image_is_not_a_chi_square_false_positive() {
+        // A natural-looking image well past the windowing threshold must not
+        // raise the advisory flag in any window.
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("big.png");
+        make_png(&src, 256, 256);
+        let report = scan(&src);
+        let lsb = report
+            .findings
+            .iter()
+            .find(|f| f.method == Method::Lsb)
+            .unwrap();
+        assert!(
+            !lsb.statistical_anomaly,
+            "clean image tripped chi-square: {}",
+            lsb.detail
+        );
+        assert!(!lsb.suspicious);
+    }
+
+    #[test]
+    fn partial_lsb_embed_trips_windowed_chi_square() {
+        // Overwrite the LSBs of only the first half of a large image. The global
+        // histogram barely moves, but a window inside the embedded region is
+        // fully equalized — the windowed test must catch it.
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("cover.png");
+        let out = dir.path().join("partial.png");
+        make_png(&src, 256, 256);
+
+        let img = image::ImageReader::open(&src).unwrap().decode().unwrap();
+        let (w, h) = (img.width(), img.height());
+        let mut rgb = img.to_rgb8().into_raw();
+        let half = rgb.len() / 2;
+        let mut s: u32 = 0xBEEF_0001;
+        for byte in rgb.iter_mut().take(half) {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *byte = (*byte & 0xFE) | ((s >> 31) as u8);
+        }
+        image::save_buffer(&out, &rgb, w, h, image::ColorType::Rgb8).unwrap();
+
+        let report = scan(&out);
+        let lsb = report
+            .findings
+            .iter()
+            .find(|f| f.method == Method::Lsb)
+            .unwrap();
+        assert!(
+            lsb.statistical_anomaly,
+            "partial LSB embed should trip the windowed chi-square advisory: {}",
+            lsb.detail
+        );
+    }
+
+    #[test]
+    fn text_with_some_trailing_whitespace_is_not_flagged() {
+        // Under half the lines carry trailing whitespace — normal for some
+        // source files; must not be flagged and must not "recover" a payload.
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("code.txt");
+        let mut body = String::new();
+        for i in 0..40 {
+            if i % 3 == 0 {
+                body.push_str("trailing here \n"); // ~1/3 of lines
+            } else {
+                body.push_str("clean line\n");
+            }
+        }
+        std::fs::write(&f, body).unwrap();
+        let report = scan(&f);
+        let ws = report
+            .findings
+            .iter()
+            .find(|f| f.method == Method::Whitespace)
+            .unwrap();
+        assert!(!ws.suspicious, "should not recover a payload: {}", ws.detail);
+        assert!(!ws.statistical_anomaly, "1/3 trailing should be normal");
+    }
+
+    #[test]
+    fn whitespace_capacity_matches_embed() {
+        // The reported capacity must be exactly the largest payload embed accepts.
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("doc.txt");
+        let out = dir.path().join("doc2.txt");
+        let body: String = (0..512).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(&src, &body).unwrap();
+        let cap = whitespace::capacity_bytes(&body);
+        assert!(cap > 0);
+        // Exactly `cap` bytes must fit; `cap + 1` must not.
+        let ok = vec![b'x'; cap as usize];
+        embed(Method::Whitespace, &src, &out, &ok).unwrap();
+        let too_big = vec![b'x'; cap as usize + 1];
+        assert!(matches!(
+            embed(Method::Whitespace, &src, &out, &too_big),
+            Err(AnalysisError::Capacity { .. })
+        ));
+    }
+
+    /// A minimal but structurally valid JPEG: SOI, an APP0 segment, a SOS whose
+    /// entropy data includes FF00 byte-stuffing, then EOI. Exercises the JPEG
+    /// marker walker without needing a JPEG encoder feature.
+    fn make_jpeg() -> Vec<u8> {
+        let mut v = vec![0xFF, 0xD8]; // SOI
+        // APP0, length 4 (covers the length field + 2 payload bytes)
+        v.extend_from_slice(&[0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00]);
+        // SOS, length 4 + 2 header bytes
+        v.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x04, 0x00, 0x00]);
+        // Entropy-coded data with a stuffed FF (FF 00 is data, not a marker).
+        v.extend_from_slice(&[0x12, 0x34, 0xFF, 0x00, 0x56]);
+        v.extend_from_slice(&[0xFF, 0xD9]); // EOI
+        v
+    }
+
+    #[test]
+    fn jpeg_walker_finds_eoi_and_appended_payload_round_trips() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("pic.jpg");
+        let out = dir.path().join("pic_stego.jpg");
+        std::fs::write(&src, make_jpeg()).unwrap();
+
+        // Clean JPEG: no trailing data.
+        let clean = scan(&src);
+        let fa_clean = clean
+            .findings
+            .iter()
+            .find(|f| f.method == Method::FormatAppend)
+            .unwrap();
+        assert!(!fa_clean.suspicious, "clean jpeg flagged: {}", fa_clean.detail);
+
+        // A payload that itself contains an EOI marker (FF D9) must still be
+        // recovered — the walker pins the real EOI before the appended data.
+        let secret = b"\xFF\xD9 sneaky tail \xFF\xD9";
+        embed(Method::FormatAppend, &src, &out, secret).unwrap();
+        let got = extract(Method::FormatAppend, &out).unwrap();
+        assert_eq!(got, secret);
+
+        let report = scan(&out);
+        let fa = report
+            .findings
+            .iter()
+            .find(|f| f.method == Method::FormatAppend)
+            .unwrap();
+        assert!(fa.suspicious);
+        assert_eq!(fa.recoverable_bytes, Some(secret.len() as u64));
+    }
+
+    /// A minimal GIF87a: header, logical screen descriptor (no global color
+    /// table), one image descriptor with a tiny image-data sub-block, trailer.
+    fn make_gif() -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(b"GIF87a");
+        // Logical screen descriptor: width=1,height=1, packed=0 (no GCT), bg=0, ar=0
+        v.extend_from_slice(&[0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00]);
+        // Image descriptor
+        v.push(0x2C);
+        v.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00]); // 9 bytes, packed=0
+        v.push(0x02); // LZW min code size
+        v.extend_from_slice(&[0x02, 0x4C, 0x01]); // sub-block: len 2 + data
+        v.push(0x00); // sub-block terminator
+        v.push(0x3B); // trailer
+        v
+    }
+
+    #[test]
+    fn gif_walker_finds_trailer_and_appended_payload_round_trips() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("anim.gif");
+        let out = dir.path().join("anim_stego.gif");
+        std::fs::write(&src, make_gif()).unwrap();
+
+        let clean = scan(&src);
+        let fa_clean = clean
+            .findings
+            .iter()
+            .find(|f| f.method == Method::FormatAppend)
+            .unwrap();
+        assert!(!fa_clean.suspicious, "clean gif flagged: {}", fa_clean.detail);
+
+        // Payload containing a 0x3B (the trailer byte) must still round-trip.
+        let secret = b"tail;with;semicolons";
+        embed(Method::FormatAppend, &src, &out, secret).unwrap();
+        let got = extract(Method::FormatAppend, &out).unwrap();
+        assert_eq!(got, secret);
+    }
+
+    #[test]
+    fn png_walker_pins_real_iend_past_appended_payload() {
+        // Payload bytes that include "IEND" must not confuse the chunk walker.
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("p.png");
+        let out = dir.path().join("p_stego.png");
+        make_png(&src, 16, 16);
+        let secret = b"IEND is in here \x00\x00\x00\x00IEND and again";
+        embed(Method::FormatAppend, &src, &out, secret).unwrap();
+        let got = extract(Method::FormatAppend, &out).unwrap();
+        assert_eq!(got, secret);
     }
 }
