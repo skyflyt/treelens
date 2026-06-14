@@ -309,6 +309,9 @@ export const ipc = {
   saveBytes(path: string, bytes: number[]) {
     return invoke<void>("save_bytes", { path, bytes });
   },
+  exportTree(root: number, format: "csv" | "json", dest: string) {
+    return invoke<number>("export_tree", { tab: activeTab, root, format, dest });
+  },
   listDrives() {
     return invoke<DriveEntry[]>("list_drives");
   },

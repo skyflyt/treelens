@@ -454,6 +454,124 @@ fn search(
     Ok(hits)
 }
 
+/// Export the subtree under `root` to `dest` as CSV or JSON. Walks iteratively
+/// and streams rows to a buffered writer so even a whole-drive tree exports
+/// without building a giant in-memory string. Returns the number of rows written.
+#[tauri::command]
+fn export_tree(
+    tab: u32,
+    root: u32,
+    format: String,
+    dest: String,
+    state: State<'_, AppState>,
+) -> Result<usize, CommandError> {
+    use std::io::{BufWriter, Write};
+    let is_json = format.eq_ignore_ascii_case("json");
+
+    let tabs = state.tabs.read();
+    let td = tabs.get(&tab).ok_or_else(|| CommandError {
+        message: "no scan loaded".into(),
+    })?;
+    if root as usize >= td.tree.nodes.len() {
+        return Err(CommandError {
+            message: format!("invalid root {root}"),
+        });
+    }
+
+    let file = std::fs::File::create(&dest).map_err(|e| CommandError {
+        message: format!("cannot create {dest}: {e}"),
+    })?;
+    let mut w = BufWriter::new(file);
+    let mut count = 0usize;
+
+    let write_err = |e: std::io::Error| CommandError {
+        message: format!("write failed: {e}"),
+    };
+
+    // The export path for the root node is the actual scan path; descendants are
+    // built incrementally (parent path + name) to avoid an O(depth) re-walk per
+    // node. Stack holds (idx, full_path).
+    let root_path = td.scan_path.to_string_lossy().to_string();
+
+    if is_json {
+        w.write_all(b"[").map_err(write_err)?;
+    } else {
+        w.write_all(b"path,name,type,allocated,logical,mtime,file_count,dir_count\r\n")
+            .map_err(write_err)?;
+    }
+
+    let mut stack: Vec<(u32, String)> = vec![(root, root_path)];
+    while let Some((idx, path)) = stack.pop() {
+        let n = &td.tree.nodes[idx as usize];
+        let kind = if n.is_reparse() {
+            "reparse"
+        } else if n.is_dir() {
+            "dir"
+        } else {
+            "file"
+        };
+        if is_json {
+            if count > 0 {
+                w.write_all(b",").map_err(write_err)?;
+            }
+            // serde_json handles all string escaping correctly.
+            let obj = serde_json::json!({
+                "path": path,
+                "name": n.name,
+                "type": kind,
+                "allocated": n.allocated,
+                "logical": n.logical,
+                "mtime": n.mtime,
+                "file_count": n.file_count,
+                "dir_count": n.dir_count,
+            });
+            serde_json::to_writer(&mut w, &obj).map_err(|e| CommandError {
+                message: format!("json encode failed: {e}"),
+            })?;
+        } else {
+            let row = format!(
+                "{},{},{},{},{},{},{},{}\r\n",
+                csv_field(&path),
+                csv_field(&n.name),
+                kind,
+                n.allocated,
+                n.logical,
+                n.mtime,
+                n.file_count,
+                n.dir_count,
+            );
+            w.write_all(row.as_bytes()).map_err(write_err)?;
+        }
+        count += 1;
+
+        // Push children with their precomputed paths.
+        for c in td.tree.child_indexes(idx) {
+            let cname = &td.tree.nodes[c as usize].name;
+            let mut cpath = path.clone();
+            if !cpath.ends_with(['\\', '/']) {
+                cpath.push('\\');
+            }
+            cpath.push_str(cname);
+            stack.push((c, cpath));
+        }
+    }
+
+    if is_json {
+        w.write_all(b"]").map_err(write_err)?;
+    }
+    w.flush().map_err(write_err)?;
+    Ok(count)
+}
+
+/// Quote a CSV field if it contains a comma, quote, CR, or LF (RFC 4180).
+fn csv_field(s: &str) -> String {
+    if s.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
 /// Resolve a node idx within tab `tab` to its absolute filesystem path.
 fn node_path(state: &AppStateInner, tab: u32, idx: u32) -> Result<PathBuf, CommandError> {
     let tabs = state.tabs.read();
@@ -1309,6 +1427,7 @@ pub fn run() {
             breadcrumb,
             node_summary,
             search,
+            export_tree,
             open_in_explorer,
             open_in_terminal,
             copy_path,
@@ -1352,4 +1471,27 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running treelens");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn csv_field_quotes_only_when_needed() {
+        assert_eq!(csv_field("plain"), "plain");
+        assert_eq!(csv_field("a,b"), "\"a,b\"");
+        assert_eq!(csv_field("he said \"hi\""), "\"he said \"\"hi\"\"\"");
+        assert_eq!(csv_field("line1\r\nline2"), "\"line1\r\nline2\"");
+        // A Windows path with no special chars stays unquoted.
+        assert_eq!(csv_field(r"C:\Users\me\file.txt"), r"C:\Users\me\file.txt");
+    }
+
+    #[test]
+    fn parse_search_kind_maps_known_values() {
+        assert_eq!(parse_search_kind("files"), SearchKind::FilesOnly);
+        assert_eq!(parse_search_kind("dirs"), SearchKind::DirsOnly);
+        assert_eq!(parse_search_kind("all"), SearchKind::All);
+        assert_eq!(parse_search_kind("whatever"), SearchKind::All);
+    }
 }

@@ -165,6 +165,7 @@ async function switchToTab(id: number) {
   (elNewFolderBtn as HTMLButtonElement).disabled = state.currentRoot === null;
   (elNewFileBtn as HTMLButtonElement).disabled = state.currentRoot === null;
   (elJunkBtn as HTMLButtonElement).disabled = state.currentRoot === null;
+  (elExportBtn as HTMLButtonElement).disabled = state.currentRoot === null;
 }
 
 async function newTab() {
@@ -211,6 +212,7 @@ const elRescanBtn = $("#rescan-btn");
 const elNewFolderBtn = $("#new-folder-btn");
 const elNewFileBtn = $("#new-file-btn");
 const elJunkBtn = $("#junk-btn");
+const elExportBtn = $("#export-btn");
 const elModeAlloc = $("#mode-allocated");
 const elModeLogical = $("#mode-logical");
 const elHeatBtn = $("#heat-btn");
@@ -292,6 +294,7 @@ const treemap = new Treemap(
   elJunkBtn.addEventListener("click", () => {
     if (state.currentRoot !== null) runJunkFinder(state.currentRoot);
   });
+  elExportBtn.addEventListener("click", () => exportCurrentTree());
   elScanCancel.addEventListener("click", () => {
     ipc.scanCancel().catch(() => {});
   });
@@ -576,6 +579,7 @@ async function handleScanComplete(p: {
   (elNewFolderBtn as HTMLButtonElement).disabled = false;
   (elNewFileBtn as HTMLButtonElement).disabled = false;
   (elJunkBtn as HTMLButtonElement).disabled = false;
+  (elExportBtn as HTMLButtonElement).disabled = false;
   expandedIdxs.clear();
   // Name the active tab after the scanned folder's last path segment.
   const t = tabs.find((x) => x.id === activeTabId);
@@ -1057,6 +1061,40 @@ async function refreshTopN(seq: number = drillSeq) {
     fd.appendChild(renderRow(r));
   }
   elTopDirsList.appendChild(fd);
+}
+
+// ---------- export ----------
+
+/** Export the current view's subtree to CSV or JSON. The format is inferred
+ *  from the extension the user picks in the save dialog (default CSV). */
+async function exportCurrentTree() {
+  const root = state.currentRoot;
+  if (root === null) return;
+  const base =
+    (state.scanRootPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "treelens")
+      .replace(/[^A-Za-z0-9._-]+/g, "_") || "treelens";
+  try {
+    const { save: saveDialog } = await import("@tauri-apps/plugin-dialog");
+    const dest = await saveDialog({
+      defaultPath: `${base}.csv`,
+      filters: [
+        { name: "CSV", extensions: ["csv"] },
+        { name: "JSON", extensions: ["json"] },
+      ],
+    });
+    if (!dest) return;
+    const format = dest.toLowerCase().endsWith(".json") ? "json" : "csv";
+    pushLoading("Exporting…");
+    let count: number;
+    try {
+      count = await ipc.exportTree(root, format, dest);
+    } finally {
+      popLoading();
+    }
+    elStatusSummary.textContent = `Exported ${fmtCount(count)} rows to ${dest}`;
+  } catch (e) {
+    elStatusSummary.textContent = `Export failed: ${(e as Error)?.message ?? e}`;
+  }
 }
 
 // ---------- column sort ----------
