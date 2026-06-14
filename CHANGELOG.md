@@ -4,6 +4,36 @@ All notable changes to Treelens are documented here.
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning is [SemVer](https://semver.org/) (0.x while pre-1.0).
 
+## [0.6.2] — 2026-06-14
+
+A hardening pass from a two-agent competitive review (top 10 findings).
+
+### Fixed
+- **Treemap keyboard nav double-fired** with the list: with the canvas focused,
+  arrow keys drove both the treemap's spatial selection and the list's — the
+  canvas handler now stops propagation, and the global key guard ignores
+  `<select>`/`<textarea>` too.
+- **Search results could act on the wrong tree.** Switching tabs / starting or
+  opening a scan now clears the Search tab, so a result row (whose idx is only
+  valid for the tree it came from) can't navigate the wrong tree.
+- **Crash on a malformed `.treelens` file.** `open_scan` now validates every
+  node's parent/child-range bounds before use (the query + treemap paths index
+  the arena unchecked).
+- **Stale selection after a rescan** could let a follow-up delete hit the wrong
+  file; the whole selection is now cleared when a scan starts.
+- **Duplicate finder forced OneDrive downloads** by hashing cloud placeholders;
+  it now skips files with no on-disk allocation.
+- **Closing a scanning tab leaked** its watchdog timer / scanning-tab entry.
+- A deferred single-click could expand a stale node after navigating away by
+  other means; navigation now cancels the pending click.
+- Empty-state overlay visibility is centralized through one function (the class
+  of the 0.6.1 bug).
+- Treemap tooltip "% of view" could exceed 100%; the "% of parent" sort header
+  now lights independently of Size.
+- **CSV export** neutralizes spreadsheet formula-injection leads (`= + - @`).
+
+[0.6.2]: https://github.com/skyflyt/treelens/releases/tag/v0.6.2
+
 ## [0.6.1] — 2026-06-14
 
 ### Fixed

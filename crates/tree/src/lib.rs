@@ -313,6 +313,32 @@ impl Tree {
         out.reverse();
         out
     }
+
+    /// Validate structural invariants the query/layout code relies on. Built
+    /// trees always satisfy these, but a tree deserialized from an untrusted /
+    /// hand-edited `.treelens` snapshot might not — and `children`,
+    /// `child_indexes`, `walk_subtree`, and the treemap layout index the arena
+    /// with no bounds checks, so a bad snapshot would panic. Call this before
+    /// trusting a deserialized tree.
+    pub fn is_structurally_valid(&self) -> bool {
+        let n = self.nodes.len() as u64;
+        if n == 0 || self.root as u64 >= n {
+            return false;
+        }
+        for node in &self.nodes {
+            if node.parent != u32::MAX && node.parent as u64 >= n {
+                return false;
+            }
+            if node.child_count > 0 {
+                // first_child .. first_child + child_count must fit in the arena.
+                let end = node.first_child as u64 + node.child_count as u64;
+                if node.first_child as u64 >= n || end > n {
+                    return false;
+                }
+            }
+        }
+        true
+    }
 }
 
 // ---------- List + top-N queries ----------
@@ -987,6 +1013,25 @@ mod tests {
         let dirs = search(&t, 0, &opts, SizeMode::Logical);
         assert_eq!(dirs.len(), 1);
         assert_eq!(dirs[0].name, "sub");
+    }
+
+    #[test]
+    fn structural_validation_catches_bad_nodes() {
+        let mut t = flat();
+        assert!(t.is_structurally_valid(), "a built tree is valid");
+        // Corrupt a child range to point past the arena (as a bad snapshot would).
+        t.nodes[0].child_count = 9999;
+        assert!(!t.is_structurally_valid());
+
+        let mut t2 = flat();
+        t2.nodes[1].parent = 12345; // out-of-range parent
+        assert!(!t2.is_structurally_valid());
+
+        let empty = Tree {
+            nodes: vec![],
+            root: 0,
+        };
+        assert!(!empty.is_structurally_valid());
     }
 
     #[test]

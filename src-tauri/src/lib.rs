@@ -590,7 +590,10 @@ fn open_scan(
     }
     let tree = snap.tree;
     let root_idx = tree.root;
-    if tree.nodes.is_empty() || root_idx as usize >= tree.nodes.len() {
+    // The query/treemap paths index the arena without bounds checks, so a
+    // malformed or hand-edited snapshot (bad parent/first_child/child_count)
+    // would panic the moment the UI renders it. Reject it up front instead.
+    if !tree.is_structurally_valid() {
         return Err(CommandError {
             message: "scan file is empty or corrupt".into(),
         });
@@ -758,7 +761,11 @@ fn find_duplicates(
     let mut stack: Vec<(u32, String)> = vec![(root, root_path)];
     while let Some((idx, path)) = stack.pop() {
         let n = &td.tree.nodes[idx as usize];
-        if !n.is_dir() && !n.is_reparse() && n.logical >= min_size {
+        // Skip cloud placeholders (OneDrive Files-On-Demand etc.): they report a
+        // real `logical` size but `allocated == 0` because the bytes aren't on
+        // disk. Hashing them would force a download of every candidate. (This
+        // also skips genuinely-empty files, which can't be useful duplicates.)
+        if !n.is_dir() && !n.is_reparse() && n.allocated > 0 && n.logical >= min_size {
             files.push((path.clone(), n.logical));
         }
         for c in td.tree.child_indexes(idx) {
@@ -777,10 +784,24 @@ fn find_duplicates(
 
 /// Quote a CSV field if it contains a comma, quote, CR, or LF (RFC 4180).
 fn csv_field(s: &str) -> String {
-    if s.contains([',', '"', '\n', '\r']) {
-        format!("\"{}\"", s.replace('"', "\"\""))
+    // Formula-injection guard: a field starting with = + - @ (or a tab/CR a
+    // spreadsheet might strip) is treated as a formula by Excel/Sheets. Prefix
+    // a single quote so it's imported as literal text. A filename like
+    // `=HYPERLINK(...)` otherwise executes on open.
+    let needs_quoting = s.contains([',', '"', '\n', '\r']);
+    let formula_lead = s
+        .chars()
+        .next()
+        .is_some_and(|c| matches!(c, '=' | '+' | '-' | '@' | '\t' | '\r'));
+    let body = if formula_lead {
+        format!("'{s}")
     } else {
         s.to_string()
+    };
+    if needs_quoting || formula_lead {
+        format!("\"{}\"", body.replace('"', "\"\""))
+    } else {
+        body
     }
 }
 
@@ -1753,6 +1774,13 @@ mod tests {
         assert_eq!(csv_field("line1\r\nline2"), "\"line1\r\nline2\"");
         // A Windows path with no special chars stays unquoted.
         assert_eq!(csv_field(r"C:\Users\me\file.txt"), r"C:\Users\me\file.txt");
+        // Formula-injection leads are neutralized with a leading quote + wrapping.
+        assert_eq!(csv_field("=HYPERLINK(\"x\")"), "\"'=HYPERLINK(\"\"x\"\")\"");
+        assert_eq!(csv_field("+1"), "\"'+1\"");
+        assert_eq!(csv_field("-cmd"), "\"'-cmd\"");
+        assert_eq!(csv_field("@SUM"), "\"'@SUM\"");
+        // A normal leading char is untouched.
+        assert_eq!(csv_field("report.txt"), "report.txt");
     }
 
     #[test]

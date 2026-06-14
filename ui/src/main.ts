@@ -164,6 +164,8 @@ async function switchToTab(id: number) {
   if (id === activeTabId) return;
   const target = tabs.find((t) => t.id === id);
   if (!target) return;
+  cancelPendingRowClick();
+  clearSearch(); // search results belong to the outgoing tab's tree
   snapshotActiveTab();
   activeTabId = id;
   setActiveTab(id); // route subsequent IPC at this tab's tree
@@ -171,10 +173,9 @@ async function switchToTab(id: number) {
   renderTabBar();
   drillSeq++; // invalidate any in-flight renders from the previous tab
   if (state.currentRoot !== null) {
-    // Switching to a scanned tab: make sure the empty-state overlay from a
-    // previous empty tab is dismissed (it's only toggled in renderEmptyState /
-    // handleScanComplete, neither of which runs on this path).
-    elTreemapEmpty.hidden = true;
+    // Single source of truth for the overlay — dismisses the empty-state card
+    // left over from a previous empty tab.
+    renderEmptyState();
     await refreshAll(drillSeq);
     elStatusSummary.textContent = state.totals
       ? `${fmtCount(state.totals.files)} files · ${fmtCount(state.totals.dirs)} folders · ${fmtBytes(state.totals.bytes)}`
@@ -219,6 +220,9 @@ async function newTab() {
 function closeTab(id: number) {
   if (tabs.length <= 1) return;
   ipc.closeTab(id).catch(() => {});
+  // Cancel any in-flight scan watchdog for this tab so its timer + scanningTabs
+  // entry don't leak across repeated open/scan/close cycles.
+  clearScanWatchdog(id);
   const idx = tabs.findIndex((t) => t.id === id);
   if (idx === -1) return;
   tabs.splice(idx, 1);
@@ -484,7 +488,13 @@ const treemap = new Treemap(
       openSearchTab();
       return;
     }
-    if (e.target instanceof HTMLInputElement) return;
+    // Don't hijack typing/selection keys while a form control is focused.
+    if (
+      e.target instanceof HTMLInputElement ||
+      e.target instanceof HTMLSelectElement ||
+      e.target instanceof HTMLTextAreaElement
+    )
+      return;
     if (e.key === "F1" || e.key === "?") {
       e.preventDefault();
       toggleHelp();
@@ -640,12 +650,20 @@ function startScan(rootPath: string) {
   state.scanning = true;
   state.scanRoot = null;
   state.currentRoot = null;
+  // Clear the whole selection: after the rescan the tree is rebuilt with new
+  // arena indices, so stale idxs would resolve to the WRONG paths if a
+  // destructive action (Del / selection bar) fired against the new tree.
   state.selectedIdx = null;
+  state.selectedIdxs.clear();
+  state.selectAnchor = null;
+  treemap.setSelected(null);
+  updateSelectionBar();
+  clearSearch(); // results from the old tree would point at stale idxs
   state.rectNames.clear();
   state.totals = null;
   state.scanRootPath = rootPath;
   elScanningOverlay.hidden = false;
-  elTreemapEmpty.hidden = true;
+  renderEmptyState(); // scanning=true → overlay hidden, via the single authority
   elDirList.innerHTML = "";
   elTopFilesList.innerHTML = "";
   elTopDirsList.innerHTML = "";
@@ -716,7 +734,7 @@ async function handleScanComplete(p: {
   state.scanRootPath = p.root_path;
   state.totals = { files: p.files, dirs: p.dirs, bytes: p.bytes, duration_ms: p.duration_ms };
   elScanningOverlay.hidden = true;
-  elTreemapEmpty.hidden = true;
+  renderEmptyState(); // scanRoot now set → overlay hidden, via the single authority
   (elRescanBtn as HTMLButtonElement).disabled = false;
   (elNewFolderBtn as HTMLButtonElement).disabled = false;
   (elNewFileBtn as HTMLButtonElement).disabled = false;
@@ -725,6 +743,7 @@ async function handleScanComplete(p: {
   (elDupesBtn as HTMLButtonElement).disabled = false;
   (elSaveScanBtn as HTMLButtonElement).disabled = false;
   expandedIdxs.clear();
+  clearSearch(); // opening a saved scan builds a fresh tree; drop stale results
   // Name the active tab after the scanned folder's last path segment.
   const t = tabs.find((x) => x.id === activeTabId);
   if (t) {
@@ -899,6 +918,7 @@ function clickSelect(idx: number, e: MouseEvent) {
  *  drillInto()'s nameIsDir guard would reject these because ancestors aren't in
  *  the current view's dirIdxs set. */
 async function navigateToFolder(idx: number) {
+  cancelPendingRowClick();
   if (state.currentRoot === idx) return;
   const seq = ++drillSeq;
   state.currentRoot = idx;
@@ -1367,6 +1387,7 @@ function openSearchTab() {
 }
 
 async function drillInto(idx: number) {
+  cancelPendingRowClick();
   if (!nameIsDir(idx)) return;
   const name = state.rectNames.get(idx) || "(node)";
   const seq = ++drillSeq;
@@ -1393,6 +1414,7 @@ async function drillInto(idx: number) {
 }
 
 async function drillUp() {
+  cancelPendingRowClick();
   if (state.currentRoot === null || state.scanRoot === null) return;
   if (state.currentRoot === state.scanRoot) return;
   const crumbs = await ipc.breadcrumb(state.currentRoot).catch(() => []);
@@ -1582,9 +1604,10 @@ async function refreshTreemap(seq: number = drillSeq) {
     state.rectNames.set(r.idx, r.name);
     if (r.is_dir) dirIdxs.add(r.idx);
     if (r.idx === state.currentRoot) rootSize = r.size;
-    if (r.size > rootSize && r.depth <= 1) rootSize = Math.max(rootSize, r.size);
   }
-  // Size of the view's root, for the tooltip's "% of view" readout.
+  // Denominator for the tooltip's "% of view": the current root's own size,
+  // falling back to the largest rect if the root container wasn't emitted.
+  // (A previous heuristic could pick a depth-1 child and push percentages >100%.)
   treemapRootSize = rootSize || rects.reduce((m, r) => Math.max(m, r.size), 0);
   treemap.setData(rects, state.currentRoot, (idx) => state.rectNames.get(idx) || "");
 }
@@ -1863,8 +1886,16 @@ async function openSavedScan() {
 const SORT_FOR: Record<string, { asc: SortKey; desc: SortKey; first: SortKey }> = {
   name: { asc: "name_asc", desc: "name_desc", first: "name_asc" },
   size: { asc: "size_asc", desc: "size_desc", first: "size_desc" },
+  // "% of parent" is size-derived: it maps to the same SortKey but is tracked as
+  // its own header so only the header the user clicked shows the arrow.
+  pct: { asc: "size_asc", desc: "size_desc", first: "size_desc" },
   mtime: { asc: "mtime_asc", desc: "mtime_desc", first: "mtime_desc" },
 };
+
+// Which header column is currently the active sort target (for the indicator).
+// Distinct from the SortKey because Size and % share one key but are separate
+// headers. Initialized from the persisted sort on first paint.
+let activeSortcol = "size";
 
 function colOfSort(s: SortKey): { col: string; dir: "asc" | "desc" } | null {
   switch (s) {
@@ -1885,24 +1916,30 @@ function setupColumnSort() {
       const map = SORT_FOR[col];
       if (!map) return;
       const cur = colOfSort(state.sort);
-      // Same column → flip; different column → that column's natural default.
-      state.sort =
-        cur && cur.col === col ? (cur.dir === "asc" ? map.desc : map.asc) : map.first;
+      // Clicking the already-active header flips direction; any other header
+      // applies its natural default.
+      const sameHeader = activeSortcol === col;
+      state.sort = sameHeader && cur ? (cur.dir === "asc" ? map.desc : map.asc) : map.first;
+      activeSortcol = col;
       saveConfig();
       updateSortIndicators();
       if (state.currentRoot !== null) refreshDirList(++drillSeq, false);
     });
   });
+  // Default the active header from the persisted sort key.
+  activeSortcol = colOfSort(state.sort)?.col ?? "size";
   updateSortIndicators();
 }
 
 function updateSortIndicators() {
-  const cur = colOfSort(state.sort);
+  const dir = colOfSort(state.sort)?.dir;
   document.querySelectorAll<HTMLElement>("#list-header .sortable").forEach((h) => {
     const ind = h.querySelector(".sort-ind");
-    const active = cur && cur.col === h.dataset.sortcol;
-    h.classList.toggle("sorted", !!active);
-    if (ind) ind.textContent = active ? (cur!.dir === "asc" ? " ▲" : " ▼") : "";
+    // Only the header the user actually clicked lights up, even though Size and
+    // "% of parent" resolve to the same SortKey.
+    const active = h.dataset.sortcol === activeSortcol && !!dir;
+    h.classList.toggle("sorted", active);
+    if (ind) ind.textContent = active ? (dir === "asc" ? " ▲" : " ▼") : "";
   });
 }
 
@@ -1947,6 +1984,20 @@ async function refreshExtensions(seq: number = drillSeq) {
 let searchKind: SearchKind = "all";
 let searchSeq = 0;
 let searchDebounce: ReturnType<typeof setTimeout> | null = null;
+
+/** Reset the Search tab. Called whenever the underlying tree changes (tab
+ *  switch / new scan) so result rows — whose idxs are only valid for the tree
+ *  they came from — can't be revealed against a different tree. */
+function clearSearch() {
+  searchSeq++; // invalidate any in-flight runSearch render
+  if (searchDebounce) {
+    clearTimeout(searchDebounce);
+    searchDebounce = null;
+  }
+  elSearchInput.value = "";
+  elSearchList.innerHTML =
+    '<div class="search-hint muted small">Type to search the current folder and everything under it.</div>';
+}
 
 function setupSearch() {
   elSearchInput.addEventListener("input", () => {

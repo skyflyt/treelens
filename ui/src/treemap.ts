@@ -347,7 +347,10 @@ export class Treemap {
     if (e.key === "Enter") {
       const r = this.rects.find((rr) => rr.idx === this.selectedIdx);
       if (r) {
+        // stopPropagation so the document-level list-nav handler doesn't ALSO
+        // act on this key when the canvas is focused.
         e.preventDefault();
+        e.stopPropagation();
         this.interactions.onDoubleClick(r);
       }
       return;
@@ -355,6 +358,7 @@ export class Treemap {
     const dir = dirs[e.key];
     if (!dir) return;
     e.preventDefault();
+    e.stopPropagation();
     const selectable = this.rects.filter((r) => r.idx !== this.rootIdx);
     if (selectable.length === 0) return;
     const cur = selectable.find((r) => r.idx === this.selectedIdx);
