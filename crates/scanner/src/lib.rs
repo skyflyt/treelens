@@ -73,6 +73,11 @@ pub struct ScanOptions {
     pub cluster_size: u64,
     pub follow_reparse: bool,
     pub threads: usize,
+    /// Glob patterns for entries to skip entirely (not emitted, not traversed).
+    /// A pattern with no path separator matches the entry *name* (e.g.
+    /// `node_modules`, `*.tmp`); a pattern with a separator matches the full
+    /// path (e.g. `C:\Windows\*`). Matching is case-insensitive.
+    pub excludes: Vec<String>,
 }
 
 impl ScanOptions {
@@ -82,8 +87,88 @@ impl ScanOptions {
             cluster_size: 4096,
             follow_reparse: false,
             threads: num_cpus().clamp(2, 32),
+            excludes: Vec::new(),
         }
     }
+}
+
+/// Compiled exclusion patterns, split into name-globs and full-path-globs.
+struct Excluder {
+    name_globs: Vec<String>,
+    path_globs: Vec<String>,
+}
+
+impl Excluder {
+    fn new(patterns: &[String]) -> Self {
+        let mut name_globs = Vec::new();
+        let mut path_globs = Vec::new();
+        for p in patterns {
+            let p = p.trim();
+            if p.is_empty() {
+                continue;
+            }
+            let lp = p.to_ascii_lowercase();
+            if lp.contains('/') || lp.contains('\\') {
+                path_globs.push(lp.replace('/', "\\"));
+            } else {
+                name_globs.push(lp);
+            }
+        }
+        Self {
+            name_globs,
+            path_globs,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.name_globs.is_empty() && self.path_globs.is_empty()
+    }
+
+    /// True if `name` (the entry's file name) or `full` (its absolute path)
+    /// matches any exclusion pattern.
+    fn excluded(&self, name: &str, full: &str) -> bool {
+        let n = name.to_ascii_lowercase();
+        if self.name_globs.iter().any(|g| glob_match(g, &n)) {
+            return true;
+        }
+        if !self.path_globs.is_empty() {
+            let f = full.to_ascii_lowercase().replace('/', "\\");
+            if self.path_globs.iter().any(|g| glob_match(g, &f)) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// Minimal case-sensitive glob: `*` matches any run (including empty), `?`
+/// matches exactly one char. Callers lowercase both sides for case-insensitive
+/// matching. Linear-time two-pointer with backtracking on the last `*`.
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let (mut star, mut mark) = (usize::MAX, 0usize);
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = pi;
+            mark = ti;
+            pi += 1;
+        } else if star != usize::MAX {
+            pi = star + 1;
+            mark += 1;
+            ti = mark;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
 }
 
 fn num_cpus() -> usize {
@@ -254,6 +339,8 @@ fn worker(
     last_progress: Arc<parking_lot::Mutex<Instant>>,
     start: Instant,
 ) {
+    let excluder = Excluder::new(&opts.excludes);
+    let has_excludes = !excluder.is_empty();
     loop {
         if cancel.is_cancelled() {
             return;
@@ -284,6 +371,14 @@ fn worker(
                         continue;
                     };
                     let name = ent.file_name().to_string_lossy().to_string();
+                    // Exclusion check (cheap, before the metadata stat): skip the
+                    // entry entirely — not emitted, and (if a dir) not traversed.
+                    if has_excludes {
+                        let full = dir_path.join(&name);
+                        if excluder.excluded(&name, &full.to_string_lossy()) {
+                            continue;
+                        }
+                    }
                     let meta = match ent.metadata() {
                         Ok(m) => m,
                         Err(_) => {
@@ -547,6 +642,61 @@ mod tests {
             total_logical, 1024,
             "junction was traversed; size double-counted"
         );
+    }
+
+    #[test]
+    fn glob_match_basics() {
+        assert!(glob_match("node_modules", "node_modules"));
+        assert!(!glob_match("node_modules", "node_module"));
+        assert!(glob_match("*.tmp", "foo.tmp"));
+        assert!(glob_match("*.tmp", ".tmp"));
+        assert!(!glob_match("*.tmp", "foo.tmpx"));
+        assert!(glob_match("a?c", "abc"));
+        assert!(!glob_match("a?c", "ac"));
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("c:\\windows\\*", "c:\\windows\\system32"));
+        assert!(glob_match("*cache*", "my_cache_dir"));
+    }
+
+    #[test]
+    fn excludes_skip_dirs_and_files() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("keep.txt"), vec![0u8; 100]).unwrap();
+        fs::write(dir.path().join("trash.tmp"), vec![0u8; 50]).unwrap();
+        fs::create_dir(dir.path().join("node_modules")).unwrap();
+        fs::write(
+            dir.path().join("node_modules").join("huge.bin"),
+            vec![0u8; 9999],
+        )
+        .unwrap();
+        fs::create_dir(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src").join("main.rs"), vec![0u8; 10]).unwrap();
+
+        let opts = ScanOptions {
+            threads: 2,
+            excludes: vec!["node_modules".into(), "*.tmp".into()],
+            ..ScanOptions::new(dir.path())
+        };
+        let (rec_rx, _evt_rx, h) = spawn(opts, Cancel::new(), 1024, 16);
+        let recs: Vec<Record> = rec_rx.iter().collect();
+        let _ = h.join();
+
+        let names: Vec<&str> = recs.iter().map(|r| r.name.as_str()).collect();
+        assert!(names.contains(&"keep.txt"));
+        assert!(names.contains(&"src"));
+        assert!(names.contains(&"main.rs"));
+        assert!(!names.contains(&"trash.tmp"), "*.tmp should be excluded");
+        assert!(
+            !names.contains(&"node_modules"),
+            "excluded dir should not be emitted"
+        );
+        assert!(
+            !names.contains(&"huge.bin"),
+            "excluded dir must not be traversed"
+        );
+        // Only keep.txt (100) + main.rs (10) counted; trash + node_modules skipped.
+        let total: u64 = recs.iter().map(|r| r.logical).sum();
+        assert_eq!(total, 110);
     }
 
     #[test]

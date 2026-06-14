@@ -39,6 +39,8 @@ interface UiState {
   sort: SortKey;
   theme: "light" | "dark";
   themeFollowsSystem: boolean;
+  /** Glob patterns excluded from scans (persisted; edited in Settings). */
+  excludes: string[];
 }
 
 const state: UiState = {
@@ -56,6 +58,7 @@ const state: UiState = {
   sort: "size_desc",
   theme: prefersDark() ? "dark" : "light",
   themeFollowsSystem: true,
+  excludes: [],
 };
 
 function prefersDark(): boolean {
@@ -548,7 +551,7 @@ function startScan(rootPath: string) {
   saveConfig();
   scanningTabs.add(tab);
   armScanWatchdog(tab);
-  ipc.scanStart(rootPath, tab).catch((e) => {
+  ipc.scanStart(rootPath, tab, state.excludes).catch((e) => {
     clearScanWatchdog(tab);
     if (tab === activeTabId) {
       elScanningOverlay.hidden = true;
@@ -2195,6 +2198,7 @@ function applyConfig(raw: string | null) {
       if (v.sizeMode === "logical" || v.sizeMode === "allocated") state.sizeMode = v.sizeMode;
       if (v.colorMode === "type" || v.colorMode === "heat") state.colorMode = v.colorMode;
       if (v.sort) state.sort = v.sort;
+      if (Array.isArray(v.excludes)) state.excludes = v.excludes.filter((x) => typeof x === "string");
     }
   } catch {}
   // Apply visible state to controls.
@@ -2228,6 +2232,7 @@ function saveConfig() {
     sizeMode: state.sizeMode,
     colorMode: state.colorMode,
     sort: state.sort,
+    excludes: state.excludes,
   };
   const json = JSON.stringify(v);
   // Fast local cache (sync) + durable portable file (async, best-effort).

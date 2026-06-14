@@ -212,9 +212,11 @@ export interface StegoExtract {
 // individual file or directory should be >9 PB.
 
 export const ipc = {
-  /** Scan into a specific tab id (defaults to the active tab). */
-  scanStart(path: string, tab: number = activeTab) {
-    return invoke<void>("scan_start", { path, tab });
+  /** Scan into a specific tab id (defaults to the active tab). `excludes` are
+   *  glob patterns for entries to skip (name globs like `node_modules`/`*.tmp`,
+   *  or full-path globs containing a separator). */
+  scanStart(path: string, tab: number = activeTab, excludes: string[] = []) {
+    return invoke<void>("scan_start", { path, tab, excludes });
   },
   scanCancel() {
     return invoke<void>("scan_cancel");

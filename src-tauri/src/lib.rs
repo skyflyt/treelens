@@ -63,6 +63,7 @@ impl<E: std::fmt::Display> From<E> for CommandError {
 async fn scan_start(
     path: String,
     tab: u32,
+    excludes: Option<Vec<String>>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), CommandError> {
@@ -80,7 +81,8 @@ async fn scan_start(
         });
     }
     let cancel = Cancel::new();
-    let opts = ScanOptions::new(root.clone());
+    let mut opts = ScanOptions::new(root.clone());
+    opts.excludes = excludes.unwrap_or_default();
 
     // Channel sizes: records can be high-volume; events are sparse.
     let (rec_rx, evt_rx, handle) = scanner::spawn(opts, cancel.clone(), 8192, 32);
