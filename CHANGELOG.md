@@ -4,6 +4,33 @@ All notable changes to Treelens are documented here.
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning is [SemVer](https://semver.org/) (0.x while pre-1.0).
 
+## [0.6.0] — 2026-06-13
+
+A UI/UX-focused pass (ten sprints) polishing the whole experience.
+
+### Added
+- **Drive overview cards** on the empty state — a card per drive with a usage
+  bar; click to scan.
+- **Command palette** (`Ctrl`/`Cmd`+`K`) — fuzzy-search and run any action
+  (scan, export, dupes, settings, theme, …) from the keyboard.
+- **Selection action bar** — selecting 2+ items raises a floating bar with the
+  count, total size, and Recycle / Delete / Clear.
+- **Resizable + collapsible side panel** (drag handle, persisted width, collapse
+  toggle with a reopen tab).
+- **Richer treemap tooltip** (name, size, % of view, type, modification age) and
+  **animated drill-in/out transitions**.
+- **Breadcrumb overflow** with a "…" dropdown for deep paths, and an
+  indeterminate **scan progress bar**.
+- **Row density** toggle (comfortable/compact) and keyboard **focus rings**.
+
+### Changed
+- Context menu: per-item icons, viewport-aware flipping, and full keyboard
+  navigation (↑/↓/Enter/Esc).
+- Micro-interactions across buttons, tabs, panes, and modals — all gated on
+  `prefers-reduced-motion`.
+
+[0.6.0]: https://github.com/skyflyt/treelens/releases/tag/v0.6.0
+
 ## [0.5.0] — 2026-06-13
 
 A second ten-sprint pass focused on features and usability.

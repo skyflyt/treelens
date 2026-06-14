@@ -36,6 +36,14 @@ Grab the latest portable EXE from [Releases](https://github.com/skyflyt/treelens
 - **Admin banner** — runs without admin (some files hidden) and offers a one-click elevated relaunch for full visibility. File operations work identically in both modes.
 - **Light + dark theme** following OS by default; manual override is persisted.
 
+## New in v0.6 (UI/UX)
+
+- **Drive overview cards** on the start screen, a **command palette**
+  (<kbd>Ctrl</kbd>+<kbd>K</kbd>), a **selection action bar** for bulk ops, a
+  **resizable/collapsible** side panel, **animated treemap transitions**, a
+  richer hover tooltip, breadcrumb overflow handling, a row-**density** toggle,
+  keyboard focus rings, and motion that honors `prefers-reduced-motion`.
+
 ## New in v0.4 – v0.5
 
 - **Search** (Search tab / <kbd>Ctrl</kbd>+<kbd>F</kbd>) — find files & folders anywhere under the current view by name, with size and files/dirs-only filters; results show full paths and jump you to the item.
@@ -64,6 +72,7 @@ Treelens is the answer I wanted: a parallel scanner, a visual treemap, a familia
 | ✅ v0.3 | Tabs, keyboard navigation, checksums, file compare, steganography (detect/extract/embed) |
 | ✅ v0.4 | Correctness/perf hardening, portable `treelens.config.json`, search/filter, CSV/JSON export, duplicate finder |
 | ✅ v0.5 | Scan exclusions, file-type breakdown, save/open scan snapshots, settings panel, recents, treemap depth/legend/keyboard nav, inaccessible-path reporting |
+| ✅ v0.6 | UI/UX polish — drive cards, command palette, selection bar, resizable panel, animated treemap, richer tooltip, density, motion/a11y |
 | v0.x | NTFS MFT fast path (FSCTL_ENUM_USN_DATA) for the 10× scan speedup |
 | v0.x | Multi-drive overview, "what changed since last scan" diff |
 

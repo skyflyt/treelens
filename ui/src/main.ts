@@ -468,6 +468,12 @@ const treemap = new Treemap(
       closeHelp();
       return;
     }
+    // Ctrl/Cmd+K opens the command palette.
+    if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
+      e.preventDefault();
+      toggleCommandPalette();
+      return;
+    }
     // Ctrl/Cmd+F jumps to the Search tab from anywhere.
     if ((e.ctrlKey || e.metaKey) && (e.key === "f" || e.key === "F")) {
       e.preventDefault();
@@ -1083,6 +1089,7 @@ const HELP_SHORTCUTS: { keys: string; desc: string }[] = [
   { keys: "Delete", desc: "Recycle selected" },
   { keys: "Shift + Delete", desc: "Permanently delete selected" },
   { keys: "F5", desc: "Rescan current root" },
+  { keys: "Ctrl + K", desc: "Command palette" },
   { keys: "Ctrl + F", desc: "Jump to Search" },
   { keys: "? or F1", desc: "Show this help" },
   { keys: "Esc", desc: "Close menus / dialogs" },
@@ -1119,6 +1126,117 @@ function openHelp() {
   backdrop.querySelector("#help-close")?.addEventListener("click", closeHelp);
   document.body.appendChild(backdrop);
   (backdrop.querySelector("#help-close") as HTMLElement)?.focus();
+}
+
+// ---------- command palette ----------
+
+interface Command { label: string; icon: string; run: () => void; enabled: () => boolean }
+
+function clickEl(sel: string) {
+  ($(sel) as HTMLButtonElement | null)?.click();
+}
+function elEnabled(sel: string): boolean {
+  const el = $(sel) as HTMLButtonElement | null;
+  return !!el && !el.disabled && !el.hidden;
+}
+
+function buildCommands(): Command[] {
+  return [
+    { label: "Scan a drive or folder…", icon: "⌕", run: () => clickEl("#scan-btn"), enabled: () => true },
+    { label: "Open saved scan…", icon: "📂", run: () => clickEl("#open-scan-btn"), enabled: () => true },
+    { label: "Save scan…", icon: "💾", run: () => clickEl("#save-scan-btn"), enabled: () => elEnabled("#save-scan-btn") },
+    { label: "Rescan current root", icon: "↻", run: () => clickEl("#rescan-btn"), enabled: () => elEnabled("#rescan-btn") },
+    { label: "Export to CSV / JSON…", icon: "⤓", run: () => clickEl("#export-btn"), enabled: () => elEnabled("#export-btn") },
+    { label: "Find duplicate files…", icon: "⧉", run: () => clickEl("#dupes-btn"), enabled: () => elEnabled("#dupes-btn") },
+    { label: "Find reclaimable junk…", icon: "🧹", run: () => clickEl("#junk-btn"), enabled: () => elEnabled("#junk-btn") },
+    { label: "New folder…", icon: "📁", run: () => clickEl("#new-folder-btn"), enabled: () => elEnabled("#new-folder-btn") },
+    { label: "New file…", icon: "📄", run: () => clickEl("#new-file-btn"), enabled: () => elEnabled("#new-file-btn") },
+    { label: "Go to Search", icon: "🔎", run: () => openSearchTab(), enabled: () => true },
+    { label: "Toggle theme (light/dark)", icon: "◐", run: () => clickEl("#theme-btn"), enabled: () => true },
+    { label: "Toggle age heat-map", icon: "🔥", run: () => clickEl("#heat-btn"), enabled: () => true },
+    { label: "Collapse side panel", icon: "›", run: () => clickEl("#side-collapse"), enabled: () => true },
+    { label: "Settings…", icon: "⚙", run: () => clickEl("#settings-btn"), enabled: () => true },
+    { label: "Keyboard shortcuts", icon: "?", run: () => openHelp(), enabled: () => true },
+  ];
+}
+
+function toggleCommandPalette() {
+  if (document.getElementById("cmdk")) closeCommandPalette();
+  else openCommandPalette();
+}
+function closeCommandPalette() {
+  document.getElementById("cmdk")?.remove();
+}
+
+function openCommandPalette() {
+  closeCommandPalette();
+  // Close any other transient overlays first.
+  closeHelp();
+  const all = buildCommands();
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop cmdk-backdrop";
+  backdrop.id = "cmdk";
+  backdrop.innerHTML = `
+    <div class="cmdk" role="dialog" aria-modal="true" aria-label="Command palette">
+      <input type="text" id="cmdk-input" class="cmdk-input" placeholder="Type a command…" autocomplete="off" spellcheck="false" />
+      <div class="cmdk-list" id="cmdk-list"></div>
+    </div>`;
+  document.body.appendChild(backdrop);
+  const input = backdrop.querySelector("#cmdk-input") as HTMLInputElement;
+  const list = backdrop.querySelector("#cmdk-list") as HTMLElement;
+
+  let filtered: Command[] = [];
+  let active = 0;
+
+  const render = () => {
+    const q = input.value.trim().toLowerCase();
+    filtered = all.filter((c) => c.enabled() && (q === "" || c.label.toLowerCase().includes(q)));
+    if (active >= filtered.length) active = Math.max(0, filtered.length - 1);
+    list.innerHTML = "";
+    if (filtered.length === 0) {
+      list.innerHTML = '<div class="cmdk-empty muted small">No matching commands.</div>';
+      return;
+    }
+    filtered.forEach((c, i) => {
+      const row = document.createElement("div");
+      row.className = "cmdk-item" + (i === active ? " active" : "");
+      row.innerHTML = `<span class="cmdk-icon">${c.icon}</span><span>${escapeHtml(c.label)}</span>`;
+      row.addEventListener("mouseenter", () => {
+        active = i;
+        paintActive();
+      });
+      row.addEventListener("click", () => run(c));
+      list.appendChild(row);
+    });
+  };
+  const paintActive = () => {
+    list.querySelectorAll(".cmdk-item").forEach((r, i) => r.classList.toggle("active", i === active));
+  };
+  const run = (c: Command) => {
+    closeCommandPalette();
+    try { c.run(); } catch {}
+  };
+
+  input.addEventListener("input", () => {
+    active = 0;
+    render();
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); active = Math.min(filtered.length - 1, active + 1); paintActive(); ensureVisible(list, active); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); active = Math.max(0, active - 1); paintActive(); ensureVisible(list, active); }
+    else if (e.key === "Enter") { e.preventDefault(); if (filtered[active]) run(filtered[active]); }
+    else if (e.key === "Escape") { e.preventDefault(); closeCommandPalette(); }
+  });
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) closeCommandPalette();
+  });
+  render();
+  input.focus();
+}
+
+function ensureVisible(list: HTMLElement, i: number) {
+  const el = list.children[i] as HTMLElement | undefined;
+  el?.scrollIntoView({ block: "nearest" });
 }
 
 // ---------- settings ----------
