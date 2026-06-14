@@ -37,7 +37,7 @@
             <button class="seg-opt active" data-mode="allocated" id="mode-allocated" title="Size on disk (allocated clusters)">On disk</button>
             <button class="seg-opt" data-mode="logical" id="mode-logical" title="Logical (real) bytes">Logical</button>
           </div>
-          <button class="btn icon" id="heat-btn" title="Toggle age heat-map overlay" aria-pressed="false">
+          <button class="btn icon" id="heat-btn" title="Toggle age heat-map overlay" aria-label="Toggle age heat-map" aria-pressed="false">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2s4 4 4 8a4 4 0 1 1-8 0c0-4 4-8 4-8z"/></svg>
           </button>
           <button class="btn icon" id="theme-btn" title="Toggle theme" aria-label="Theme">
@@ -162,12 +162,14 @@
           <span class="spinner-sm"></span>
           <span id="status-loading-text">Loading…</span>
         </span>
-        <span id="status-summary">Ready.</span>
+        <span id="status-summary" aria-live="polite">Ready.</span>
         <span class="status-spacer"></span>
+        <button class="btn icon" id="help-btn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
         <span id="status-version" class="muted small"></span>
       </footer>
 
       <div class="ctx-menu" id="ctx-menu" hidden></div>
+      <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="false"></div>
     </div>
     <script type="module" src="./src/main.ts"></script>
   </body>

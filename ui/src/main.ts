@@ -352,6 +352,7 @@ const treemap = new Treemap(
 
   setupSearch();
   setupColumnSort();
+  $("#help-btn").addEventListener("click", () => toggleHelp());
 
   // New scan tab.
   elNewTabBtn.addEventListener("click", () => newTab());
@@ -366,7 +367,23 @@ const treemap = new Treemap(
 
   // Keyboard shortcuts + world-class tree navigation.
   document.addEventListener("keydown", (e) => {
+    // Esc closes the help overlay from anywhere (even with a field focused).
+    if (e.key === "Escape" && document.getElementById("help-overlay")) {
+      closeHelp();
+      return;
+    }
+    // Ctrl/Cmd+F jumps to the Search tab from anywhere.
+    if ((e.ctrlKey || e.metaKey) && (e.key === "f" || e.key === "F")) {
+      e.preventDefault();
+      openSearchTab();
+      return;
+    }
     if (e.target instanceof HTMLInputElement) return;
+    if (e.key === "F1" || e.key === "?") {
+      e.preventDefault();
+      toggleHelp();
+      return;
+    }
     switch (e.key) {
       case "ArrowDown":
         e.preventDefault();
@@ -818,6 +835,100 @@ function popLoading() {
   if (inFlightDrills === 0) {
     elStatusLoading.hidden = true;
   }
+}
+
+// ---------- toasts ----------
+
+type ToastKind = "info" | "success" | "error" | "warn";
+const elToastStack = $("#toast-stack");
+
+/** Non-blocking notification. Errors stay until dismissed; others auto-expire.
+ *  Replaces blocking alert() for status/error surfacing. */
+function toast(message: string, kind: ToastKind = "info", ms?: number) {
+  const el = document.createElement("div");
+  el.className = `toast toast-${kind}`;
+  el.setAttribute("role", kind === "error" ? "alert" : "status");
+  const icon = kind === "error" ? "✕" : kind === "success" ? "✓" : kind === "warn" ? "⚠" : "ℹ";
+  el.innerHTML = `<span class="toast-icon">${icon}</span><span class="toast-msg"></span><button class="toast-x" aria-label="Dismiss">✕</button>`;
+  el.querySelector(".toast-msg")!.textContent = message;
+  const remove = () => {
+    el.classList.add("leaving");
+    setTimeout(() => el.remove(), 180);
+  };
+  el.querySelector(".toast-x")!.addEventListener("click", remove);
+  elToastStack.appendChild(el);
+  // Errors persist (user must read/dismiss); informational ones auto-expire.
+  const life = ms ?? (kind === "error" ? 9000 : kind === "warn" ? 6000 : 3500);
+  setTimeout(remove, life);
+}
+
+/** Convenience for `catch` blocks: surface a failed action as an error toast. */
+function toastErr(prefix: string, e: unknown) {
+  toast(`${prefix}: ${(e as Error)?.message ?? e}`, "error");
+}
+
+// ---------- help overlay ----------
+
+const HELP_SHORTCUTS: { keys: string; desc: string }[] = [
+  { keys: "↑ / ↓", desc: "Move selection" },
+  { keys: "→ / ←", desc: "Expand-or-enter / collapse-or-parent" },
+  { keys: "Enter", desc: "Drill into folder / open file" },
+  { keys: "Backspace", desc: "Go up one level" },
+  { keys: "PageUp / PageDown", desc: "Jump a screenful" },
+  { keys: "Home / End", desc: "First / last row" },
+  { keys: "type letters", desc: "Type-ahead jump to a row" },
+  { keys: "F2", desc: "Rename selected" },
+  { keys: "Delete", desc: "Recycle selected" },
+  { keys: "Shift + Delete", desc: "Permanently delete selected" },
+  { keys: "F5", desc: "Rescan current root" },
+  { keys: "Ctrl + F", desc: "Jump to Search" },
+  { keys: "? or F1", desc: "Show this help" },
+  { keys: "Esc", desc: "Close menus / dialogs" },
+];
+
+function toggleHelp() {
+  if (document.getElementById("help-overlay")) closeHelp();
+  else openHelp();
+}
+
+function closeHelp() {
+  document.getElementById("help-overlay")?.remove();
+}
+
+function openHelp() {
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  backdrop.id = "help-overlay";
+  const rows = HELP_SHORTCUTS.map(
+    (s) =>
+      `<div class="help-row"><kbd>${escapeHtml(s.keys)}</kbd><span>${escapeHtml(s.desc)}</span></div>`,
+  ).join("");
+  backdrop.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+      <div class="modal-head">
+        <div class="modal-title">Keyboard shortcuts</div>
+        <button class="btn ghost small" id="help-close" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body" style="min-width:420px">${rows}</div>
+    </div>`;
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) closeHelp();
+  });
+  backdrop.querySelector("#help-close")?.addEventListener("click", closeHelp);
+  document.body.appendChild(backdrop);
+  (backdrop.querySelector("#help-close") as HTMLElement)?.focus();
+}
+
+/** Activate the Search side-tab and focus its input (Ctrl+F). */
+function openSearchTab() {
+  document
+    .querySelectorAll(".side-tabs .tab")
+    .forEach((x) => x.classList.toggle("active", (x as HTMLElement).dataset.tab === "search"));
+  document
+    .querySelectorAll(".tab-pane")
+    .forEach((x) => x.classList.toggle("active", x.id === "tab-search"));
+  elSearchInput.focus();
+  elSearchInput.select();
 }
 
 async function drillInto(idx: number) {
@@ -1425,7 +1536,7 @@ function openCtxMenu(idx: number, x: number, y: number) {
   const items: CtxItem[] = [
     isDir
       ? { label: "Drill into folder", shortcut: "Enter", action: () => drillInto(idx) }
-      : { label: "Open (edit)", shortcut: "Enter", action: () => ipc.openFile(idx).catch((e) => alert(`Open failed: ${(e as Error)?.message ?? e}`)) },
+      : { label: "Open (edit)", shortcut: "Enter", action: () => ipc.openFile(idx).catch((e) => toastErr("Open failed", e)) },
     ...(!isDir ? [{ label: "Inspect (checksums, hidden data)", action: () => inspectNode(idx) }] : []),
     { label: "Reveal in Explorer", action: () => ipc.openInExplorer(idx).catch(() => {}) },
     ...(isDir && !isReparse ? [{ label: "Open in Terminal", action: () => ipc.openInTerminal(idx).catch(() => {}) }] : []),
@@ -1510,7 +1621,7 @@ async function promptCreate(parentIdx: number, kind: "folder" | "file") {
     elStatusSummary.textContent = `Created ${res.path}`;
     if (res.rescan_path) startScan(res.rescan_path);
   } catch (e) {
-    alert(`Create failed: ${(e as Error)?.message ?? e}`);
+    toastErr("Create failed", e);
   }
 }
 
@@ -1525,7 +1636,7 @@ async function promptRename(idx: number) {
     elStatusSummary.textContent = `Renamed to ${res.path}`;
     if (res.rescan_path) startScan(res.rescan_path);
   } catch (e) {
-    alert(`Rename failed: ${(e as Error)?.message ?? e}`);
+    toastErr("Rename failed", e);
   }
 }
 
@@ -1543,7 +1654,7 @@ async function confirmRecycle(idx: number) {
       state.selectedIdxs.clear();
       if (state.scanRootPath) startScan(state.scanRootPath);
     } catch (e) {
-      alert(`Recycle failed: ${(e as Error).message ?? e}`);
+      toastErr("Recycle failed", e);
     }
     return;
   }
@@ -1558,7 +1669,7 @@ async function confirmRecycle(idx: number) {
     // Rescan the current root to pick up the change. Simpler than diffing the tree.
     if (state.scanRootPath) startScan(state.scanRootPath);
   } catch (e) {
-    alert(`Recycle failed: ${(e as Error).message ?? e}`);
+    toastErr("Recycle failed", e);
   }
 }
 
@@ -1601,18 +1712,18 @@ async function confirmDeletePermanent(idx: number) {
       // Most common cause: the file is held open by another process (e.g.
       // OneDrive's own .odl logs, an open document, a running program).
       elStatusSummary.textContent = `Deleted ${r.deleted} of ${r.requested}`;
-      alert(
-        `Deleted ${r.deleted} of ${r.requested} item(s).\n\n` +
-          `${r.failed} could NOT be deleted — most likely they're in use by ` +
-          `another program (for example OneDrive keeps its own log files open). ` +
-          `Close the program that's using them and try again.`,
+      toast(
+        `Deleted ${r.deleted} of ${r.requested}. ${r.failed} could not be deleted — ` +
+          `most likely in use by another program (e.g. OneDrive keeps its logs open). ` +
+          `Close it and try again.`,
+        "warn",
       );
     } else {
       elStatusSummary.textContent = `Permanently deleted ${r.deleted} item${r.deleted > 1 ? "s" : ""}`;
     }
     state.selectedIdxs.clear();
   } catch (e) {
-    alert(`Delete failed: ${(e as Error).message ?? e}`);
+    toastErr("Delete failed", e);
   } finally {
     popLoading();
     // Always rescan so the view matches reality (whatever got deleted is gone;
@@ -1630,7 +1741,7 @@ async function runSuperSkillOldFiles(idx: number) {
       found.map((f) => ({ label: f.path, sub: `${fmtBytes(f.size)} · ${fmtMtime(f.mtime)}` })),
     );
   } catch (e) {
-    alert(`Search failed: ${(e as Error).message ?? e}`);
+    toastErr("Search failed", e);
   }
 }
 
@@ -1642,7 +1753,7 @@ async function runSuperSkillEmpty(idx: number) {
       dirs.map((d) => ({ label: d, sub: "" })),
     );
   } catch (e) {
-    alert(`Search failed: ${(e as Error).message ?? e}`);
+    toastErr("Search failed", e);
   }
 }
 
@@ -1656,12 +1767,12 @@ async function runJunkFinder(idx: number) {
     report = await ipc.findJunk(idx, 5000);
   } catch (e) {
     popLoading();
-    alert(`Scan failed: ${(e as Error).message ?? e}`);
+    toastErr("Junk scan failed", e);
     return;
   }
   popLoading();
   if (report.total_files === 0) {
-    alert("No obvious junk found here — no logs, temp files, dumps, or empty files.");
+    toast("No obvious junk found here — no logs, temp files, dumps, or empty files.", "info");
     return;
   }
   showJunkModal(report);
@@ -1713,7 +1824,7 @@ function showJunkModal(report: import("./ipc").JunkReport) {
       const n = await ipc.recyclePaths(paths);
       elStatusSummary.textContent = `Recycled ${n} of ${paths.length} junk files (${fmtBytes(report.total_bytes)} flagged)`;
     } catch (e) {
-      alert(`Recycle failed: ${(e as Error).message ?? e}`);
+      toastErr("Recycle failed", e);
     } finally {
       popLoading();
       if (state.scanRootPath) startScan(state.scanRootPath);
@@ -1729,10 +1840,10 @@ function showJunkModal(report: import("./ipc").JunkReport) {
       const failed = paths.length - n;
       elStatusSummary.textContent = `Deleted ${n} of ${paths.length} junk files`;
       if (failed > 0) {
-        alert(`Deleted ${n} of ${paths.length}.\n\n${failed} could not be deleted — likely in use by another program (e.g. OneDrive holds its current logs open). Close that program and retry.`);
+        toast(`Deleted ${n} of ${paths.length}. ${failed} could not be deleted — likely in use by another program (e.g. OneDrive holds its current logs open). Close that program and retry.`, "warn");
       }
     } catch (e) {
-      alert(`Delete failed: ${(e as Error).message ?? e}`);
+      toastErr("Delete failed", e);
     } finally {
       popLoading();
       if (state.scanRootPath) startScan(state.scanRootPath);
@@ -1748,12 +1859,12 @@ async function runDuplicateFinder(idx: number) {
     report = await ipc.findDuplicates(idx, 4096);
   } catch (e) {
     popLoading();
-    alert(`Duplicate scan failed: ${(e as Error).message ?? e}`);
+    toastErr("Duplicate scan failed", e);
     return;
   }
   popLoading();
   if (report.total_groups === 0) {
-    alert("No duplicate files found here (files ≥ 4 KB compared by content).");
+    toast("No duplicate files found here (files ≥ 4 KB compared by content).", "info");
     return;
   }
   showDupesModal(report);
@@ -1825,7 +1936,7 @@ function showDupesModal(report: import("./ipc").DupeReport) {
         report.total_redundant_bytes,
       )} flagged)`;
     } catch (e) {
-      alert(`Recycle failed: ${(e as Error).message ?? e}`);
+      toastErr("Recycle failed", e);
     } finally {
       popLoading();
       if (state.scanRootPath) startScan(state.scanRootPath);
@@ -1927,7 +2038,7 @@ async function refreshInspector() {
     } catch (e) {
       csBtn.textContent = "Compute checksums";
       (csBtn as HTMLButtonElement).disabled = false;
-      alert(`Checksum failed: ${(e as Error)?.message ?? e}`);
+      toastErr("Checksum failed", e);
     }
   });
 
@@ -1961,7 +2072,7 @@ async function refreshInspector() {
           { label: `B: ${name}`, sub: `${fmtBytes(r.size_b)} · ${r.sha256_b}` },
         ]);
       } catch (e) {
-        alert(`Compare failed: ${(e as Error)?.message ?? e}`);
+        toastErr("Compare failed", e);
       }
     });
   }
@@ -2000,7 +2111,7 @@ async function refreshInspector() {
     } catch (e) {
       scanBtn.textContent = "Scan for hidden data";
       (scanBtn as HTMLButtonElement).disabled = false;
-      alert(`Scan failed: ${(e as Error)?.message ?? e}`);
+      toastErr("Stego scan failed", e);
     }
   });
 
@@ -2042,7 +2153,7 @@ async function extractAndShow(idx: number, method: StegoMethod) {
       }
     }
   } catch (e) {
-    alert(`Extract failed: ${(e as Error)?.message ?? e}`);
+    toastErr("Extract failed", e);
   }
 }
 
@@ -2057,7 +2168,7 @@ async function embedFlow(idx: number, method: StegoMethod) {
     elStatusSummary.textContent = `Embedded → ${res.path}`;
     if (res.rescan_path) startScan(res.rescan_path);
   } catch (e) {
-    alert(`Embed failed: ${(e as Error)?.message ?? e}`);
+    toastErr("Embed failed", e);
   }
 }
 
