@@ -410,6 +410,14 @@ body {
   background: var(--bg-elev-1);
 }
 .col-size, .col-pct, .col-mtime { text-align: right; }
+.list-header .sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.list-header .sortable:hover { color: var(--text); }
+.list-header .sortable.sorted { color: var(--accent); }
+.list-header .sort-ind { font-size: 9px; }
 
 .list-viewport {
   overflow-y: auto;

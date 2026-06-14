@@ -343,6 +343,7 @@ const treemap = new Treemap(
   });
 
   setupSearch();
+  setupColumnSort();
 
   // New scan tab.
   elNewTabBtn.addEventListener("click", () => newTab());
@@ -1058,6 +1059,57 @@ async function refreshTopN(seq: number = drillSeq) {
   elTopDirsList.appendChild(fd);
 }
 
+// ---------- column sort ----------
+
+// Per-column toggle targets and the direction to use when first switching to a
+// column. Name reads best ascending; size and date most-useful biggest/newest
+// first. The "% of parent" header shares the size key (it's size-derived).
+const SORT_FOR: Record<string, { asc: SortKey; desc: SortKey; first: SortKey }> = {
+  name: { asc: "name_asc", desc: "name_desc", first: "name_asc" },
+  size: { asc: "size_asc", desc: "size_desc", first: "size_desc" },
+  mtime: { asc: "mtime_asc", desc: "mtime_desc", first: "mtime_desc" },
+};
+
+function colOfSort(s: SortKey): { col: string; dir: "asc" | "desc" } | null {
+  switch (s) {
+    case "name_asc": return { col: "name", dir: "asc" };
+    case "name_desc": return { col: "name", dir: "desc" };
+    case "size_asc": return { col: "size", dir: "asc" };
+    case "size_desc": return { col: "size", dir: "desc" };
+    case "mtime_asc": return { col: "mtime", dir: "asc" };
+    case "mtime_desc": return { col: "mtime", dir: "desc" };
+    default: return null; // count_desc has no header
+  }
+}
+
+function setupColumnSort() {
+  document.querySelectorAll<HTMLElement>("#list-header .sortable").forEach((h) => {
+    h.addEventListener("click", () => {
+      const col = h.dataset.sortcol!;
+      const map = SORT_FOR[col];
+      if (!map) return;
+      const cur = colOfSort(state.sort);
+      // Same column → flip; different column → that column's natural default.
+      state.sort =
+        cur && cur.col === col ? (cur.dir === "asc" ? map.desc : map.asc) : map.first;
+      saveConfig();
+      updateSortIndicators();
+      if (state.currentRoot !== null) refreshDirList(++drillSeq, false);
+    });
+  });
+  updateSortIndicators();
+}
+
+function updateSortIndicators() {
+  const cur = colOfSort(state.sort);
+  document.querySelectorAll<HTMLElement>("#list-header .sortable").forEach((h) => {
+    const ind = h.querySelector(".sort-ind");
+    const active = cur && cur.col === h.dataset.sortcol;
+    h.classList.toggle("sorted", !!active);
+    if (ind) ind.textContent = active ? (cur!.dir === "asc" ? " ▲" : " ▼") : "";
+  });
+}
+
 // ---------- search ----------
 
 let searchKind: SearchKind = "all";
@@ -1250,8 +1302,19 @@ function setSizeMode(mode: SizeMode) {
   elModeLogical.classList.toggle("active", mode === "logical");
   saveConfig();
   // Bump the seq so an in-flight refresh (from a drill or the prior size mode)
-  // can't race its results in over this one.
-  if (state.currentRoot !== null) refreshAll(++drillSeq);
+  // can't race its results in over this one. The breadcrumb is independent of
+  // size mode, so we refresh only the size-sensitive views, not the path.
+  if (state.currentRoot !== null) refreshSizeSensitive(++drillSeq);
+}
+
+/** Refresh only the views whose numbers depend on the size mode (treemap, dir
+ *  list, top-N). Skips the breadcrumb, which is purely the path. */
+async function refreshSizeSensitive(seq: number = drillSeq) {
+  if (state.currentRoot === null) return;
+  const treemapP = refreshTreemap(seq).catch((e) => console.error("treemap", e));
+  const dirListP = refreshDirList(seq).catch((e) => console.error("dirList", e));
+  const topNP = refreshTopN(seq).catch((e) => console.error("topN", e));
+  await Promise.all([treemapP, dirListP, topNP]);
 }
 
 function themeForCanvas(): TreemapTheme {
