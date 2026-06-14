@@ -450,7 +450,40 @@ const treemap = new Treemap(
 
 // ---------- scan flow ----------
 
+// Tabs with an in-flight scan, plus a per-tab watchdog timer. A scan that dies
+// in the backend without emitting complete/cancelled (panic, killed worker)
+// would otherwise leave the overlay spinning forever; the watchdog recovers the
+// UI if no scan event arrives for WATCHDOG_MS.
+const scanningTabs = new Set<number>();
+const scanWatchdogs = new Map<number, ReturnType<typeof setTimeout>>();
+const WATCHDOG_MS = 45_000;
+
+function armScanWatchdog(tab: number) {
+  const prev = scanWatchdogs.get(tab);
+  if (prev) clearTimeout(prev);
+  scanWatchdogs.set(tab, setTimeout(() => handleScanStalled(tab), WATCHDOG_MS));
+}
+
+function clearScanWatchdog(tab: number) {
+  const prev = scanWatchdogs.get(tab);
+  if (prev) clearTimeout(prev);
+  scanWatchdogs.delete(tab);
+  scanningTabs.delete(tab);
+}
+
+function handleScanStalled(tab: number) {
+  clearScanWatchdog(tab);
+  if (tab !== activeTabId) return; // background tab; nothing on screen to recover
+  state.scanning = false;
+  elScanningOverlay.hidden = true;
+  (elRescanBtn as HTMLButtonElement).disabled = state.scanRootPath === "";
+  elStatusSummary.textContent =
+    "Scan stalled — no activity for 45s. The folder may be locked or inaccessible. Try again or pick another folder.";
+  renderEmptyState();
+}
+
 function startScan(rootPath: string) {
+  const tab = activeTabId;
   state.scanning = true;
   state.scanRoot = null;
   state.currentRoot = null;
@@ -469,20 +502,34 @@ function startScan(rootPath: string) {
   elBreadcrumb.innerHTML = `<span class="hint">Scanning ${escapeHtml(rootPath)}…</span>`;
   elStatusSummary.textContent = `Scanning ${rootPath}…`;
   saveConfig();
-  ipc.scanStart(rootPath).catch((e) => {
-    elScanningOverlay.hidden = true;
-    state.scanning = false;
-    elStatusSummary.textContent = `Scan failed: ${e?.message || e}`;
+  scanningTabs.add(tab);
+  armScanWatchdog(tab);
+  ipc.scanStart(rootPath, tab).catch((e) => {
+    clearScanWatchdog(tab);
+    if (tab === activeTabId) {
+      elScanningOverlay.hidden = true;
+      state.scanning = false;
+      elStatusSummary.textContent = `Scan failed: ${e?.message || e}`;
+    }
   });
 }
 
-function handleScanProgress(p: { files: number; bytes: number; elapsed_ms: number }) {
+function handleScanProgress(p: { tab: number; files: number; bytes: number; elapsed_ms: number }) {
+  // Keep the watchdog alive for whichever tab is making progress, even in the
+  // background, so a long scan in a non-active tab isn't falsely declared stalled.
+  if (scanningTabs.has(p.tab)) armScanWatchdog(p.tab);
+  if (p.tab !== activeTabId) return; // progress for a background tab — don't touch the live overlay
   elScanFiles.textContent = fmtCount(p.files);
   elScanBytes.textContent = fmtBytes(p.bytes);
   elScanElapsed.textContent = (p.elapsed_ms / 1000).toFixed(1) + " s";
 }
 
+function tabTitleFromPath(path: string): string {
+  return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
+}
+
 async function handleScanComplete(p: {
+  tab: number;
   root_idx: number;
   files: number;
   dirs: number;
@@ -490,6 +537,25 @@ async function handleScanComplete(p: {
   duration_ms: number;
   root_path: string;
 }) {
+  clearScanWatchdog(p.tab);
+
+  // A scan that finished for a *background* tab must update that tab's snapshot
+  // only — touching the live `state`/DOM here would corrupt whatever tab the
+  // user is now looking at (the original cross-tab completion bug).
+  if (p.tab !== activeTabId) {
+    const bt = tabs.find((x) => x.id === p.tab);
+    if (bt) {
+      bt.scanRoot = p.root_idx;
+      bt.currentRoot = p.root_idx;
+      bt.scanRootPath = p.root_path;
+      bt.totals = { files: p.files, dirs: p.dirs, bytes: p.bytes, duration_ms: p.duration_ms };
+      bt.selectedIdx = null;
+      bt.title = tabTitleFromPath(p.root_path);
+      renderTabBar();
+    }
+    return;
+  }
+
   state.scanning = false;
   state.scanRoot = p.root_idx;
   state.currentRoot = p.root_idx;
@@ -505,8 +571,7 @@ async function handleScanComplete(p: {
   // Name the active tab after the scanned folder's last path segment.
   const t = tabs.find((x) => x.id === activeTabId);
   if (t) {
-    const seg = p.root_path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p.root_path;
-    t.title = seg;
+    t.title = tabTitleFromPath(p.root_path);
     renderTabBar();
   }
   const seq = ++drillSeq;
@@ -520,7 +585,9 @@ async function handleScanComplete(p: {
     `${fmtCount(p.files)} files · ${fmtCount(p.dirs)} folders · ${fmtBytes(p.bytes)} · scanned in ${fmtDuration(p.duration_ms)}`;
 }
 
-function handleScanCancelled() {
+function handleScanCancelled(p: { tab: number }) {
+  clearScanWatchdog(p.tab);
+  if (p.tab !== activeTabId) return;
   state.scanning = false;
   elScanningOverlay.hidden = true;
   elStatusSummary.textContent = "Scan cancelled.";
@@ -812,8 +879,11 @@ function cancelPendingRowClick() {
 async function toggleExpand(idx: number) {
   if (expandedIdxs.has(idx)) expandedIdxs.delete(idx);
   else expandedIdxs.add(idx);
-  // Re-flatten + re-render, keeping the user's scroll position (expand-in-place).
-  await refreshDirList(drillSeq, true);
+  // Bump drillSeq so any in-flight refresh from a prior drill/tab-switch is
+  // invalidated and can't overwrite this expand's result. Re-flatten + re-render,
+  // keeping the user's scroll position (expand-in-place).
+  const seq = ++drillSeq;
+  await refreshDirList(seq, true);
 }
 
 // ---------- refresh ----------
@@ -905,7 +975,6 @@ async function refreshDirList(seq: number = drillSeq, preserveScroll = false) {
     const rows = await ipc.listDir(parent, state.sort, 0, PER_LEVEL_LIMIT, state.sizeMode);
     if (seq !== drillSeq) return;
     for (const row of rows) {
-      noteRow(row);
       next.push({ row, depth });
       if (expandedIdxs.has(row.idx) && row.is_dir && !row.is_reparse) {
         await visit(row.idx, depth + 1);
@@ -916,6 +985,10 @@ async function refreshDirList(seq: number = drillSeq, preserveScroll = false) {
   await visit(state.currentRoot, 0);
   if (seq !== drillSeq) return;
 
+  // Commit to the global note sets only after the final seq guard, so a
+  // superseded in-flight render can never pollute dirIdxs/reparseIdxs/rectNames
+  // with rows belonging to a different drill or tab.
+  for (const f of next) noteRow(f.row);
   flatRows = next;
   // Fresh drill resets scroll to top; chevron-expands keep the user in place.
   renderDirWindow(preserveScroll);
@@ -1064,7 +1137,9 @@ function setSizeMode(mode: SizeMode) {
   elModeAlloc.classList.toggle("active", mode === "allocated");
   elModeLogical.classList.toggle("active", mode === "logical");
   saveConfig();
-  if (state.currentRoot !== null) refreshAll();
+  // Bump the seq so an in-flight refresh (from a drill or the prior size mode)
+  // can't race its results in over this one.
+  if (state.currentRoot !== null) refreshAll(++drillSeq);
 }
 
 function themeForCanvas(): TreemapTheme {

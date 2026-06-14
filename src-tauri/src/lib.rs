@@ -20,6 +20,7 @@ use tree::{DirRow, LayoutOpts, Rect, SizeMode, SortKey, Tree};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ScanProgressPayload {
+    tab: u32,
     files: u64,
     bytes: u64,
     dirs: u64,
@@ -29,13 +30,20 @@ struct ScanProgressPayload {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ScanCompletePayload {
+    tab: u32,
     root_idx: u32,
     nodes: u32,
     bytes: u64,
     files: u64,
     dirs: u64,
+    errors: u64,
     duration_ms: u64,
     root_path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ScanCancelledPayload {
+    tab: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -141,6 +149,7 @@ fn collect_scan(
                 match ev {
                     ScanEvent::Progress(p) => {
                         let payload = ScanProgressPayload {
+                            tab,
                             files: p.files_seen,
                             bytes: p.bytes_seen,
                             dirs: p.dirs_seen,
@@ -159,10 +168,11 @@ fn collect_scan(
     let _ = handle.join();
 
     if cancelled {
-        let _ = app.emit("scan:cancelled", ());
+        let _ = app.emit("scan:cancelled", ScanCancelledPayload { tab });
         return;
     }
 
+    let errors = last_progress.as_ref().map(|p| p.errors).unwrap_or(0);
     let tree = Tree::build(records);
     let root_idx = tree.root;
     let bytes = tree.nodes[root_idx as usize].allocated;
@@ -178,11 +188,13 @@ fn collect_scan(
     );
     *state.last_progress.lock() = last_progress;
     let payload = ScanCompletePayload {
+        tab,
         root_idx,
         nodes,
         bytes,
         files,
         dirs,
+        errors,
         duration_ms,
         root_path: root.to_string_lossy().to_string(),
     };

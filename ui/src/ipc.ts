@@ -76,6 +76,7 @@ export interface ElevationStatus {
 }
 
 export interface ScanProgress {
+  tab: number;
   files: number;
   bytes: number;
   dirs: number;
@@ -84,13 +85,19 @@ export interface ScanProgress {
 }
 
 export interface ScanComplete {
+  tab: number;
   root_idx: number;
   nodes: number;
   bytes: number;
   files: number;
   dirs: number;
+  errors: number;
   duration_ms: number;
   root_path: string;
+}
+
+export interface ScanCancelled {
+  tab: number;
 }
 
 export interface TopN {
@@ -314,8 +321,8 @@ export function onScanProgress(cb: (p: ScanProgress) => void): Promise<UnlistenF
 export function onScanComplete(cb: (p: ScanComplete) => void): Promise<UnlistenFn> {
   return listen<ScanComplete>("scan:complete", (e) => cb(e.payload));
 }
-export function onScanCancelled(cb: () => void): Promise<UnlistenFn> {
-  return listen<void>("scan:cancelled", () => cb());
+export function onScanCancelled(cb: (p: ScanCancelled) => void): Promise<UnlistenFn> {
+  return listen<ScanCancelled>("scan:cancelled", (e) => cb(e.payload));
 }
 export function onScanAuto(cb: (path: string) => void): Promise<UnlistenFn> {
   return listen<string>("scan:auto", (e) => cb(e.payload));
