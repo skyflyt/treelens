@@ -10,6 +10,7 @@ import {
   onScanProgress,
   setActiveTab,
   type DirRow,
+  type DriveEntry,
   type ExtStat,
   type Rect,
   type SearchHit,
@@ -228,6 +229,7 @@ const elTreemapEmpty = $("#treemap-empty");
 const elTooltip = $("#treemap-tooltip");
 const elScanBtn = $("#scan-btn");
 const elEmptyScanBtn = $("#empty-scan-btn");
+const elDriveCards = $("#drive-cards");
 const elRescanBtn = $("#rescan-btn");
 const elNewFolderBtn = $("#new-folder-btn");
 const elNewFileBtn = $("#new-file-btn");
@@ -305,13 +307,20 @@ const treemap = new Treemap(
     if (typeof path === "string" && path.length > 0) startScan(path);
   });
 
-  // Scan triggers.
+  // Scan triggers. The toolbar button opens the drive+folder picker modal; the
+  // empty-state button goes straight to a folder dialog (drives are already
+  // shown as cards right above it).
   const triggerScan = async () => {
     const root = await pickScanRoot();
     if (root) startScan(root);
   };
   elScanBtn.addEventListener("click", triggerScan);
-  elEmptyScanBtn?.addEventListener("click", triggerScan);
+  elEmptyScanBtn?.addEventListener("click", async () => {
+    const { open: openDialog } = await import("@tauri-apps/plugin-dialog");
+    const picked = await openDialog({ directory: true, multiple: false });
+    if (picked && typeof picked === "string") startScan(picked);
+  });
+  renderDriveCards();
   elRescanBtn.addEventListener("click", () => {
     if (state.scanRootPath) startScan(state.scanRootPath);
   });
@@ -1978,10 +1987,45 @@ function sizeTreemap() {
 function renderEmptyState() {
   if (state.scanRoot === null && !state.scanning) {
     elTreemapEmpty.hidden = false;
+    renderDriveCards();
   } else {
     elTreemapEmpty.hidden = true;
   }
   updateTreemapChrome();
+}
+
+/** Populate the empty-state with a card per drive (usage bar + capacity);
+ *  clicking a card scans that drive. Best-effort — silent if drives can't list. */
+let driveCardsLoading = false;
+async function renderDriveCards() {
+  if (driveCardsLoading) return;
+  driveCardsLoading = true;
+  let drives: DriveEntry[];
+  try {
+    drives = await ipc.listDrives();
+  } catch {
+    driveCardsLoading = false;
+    return;
+  }
+  driveCardsLoading = false;
+  elDriveCards.innerHTML = "";
+  for (const d of drives) {
+    const used = d.total > 0 ? 1 - d.free / d.total : 0;
+    const pct = Math.round(used * 100);
+    const card = document.createElement("button");
+    card.className = "drive-card";
+    card.type = "button";
+    card.title = `Scan ${d.letter}`;
+    // Tint the bar red as a drive fills up.
+    const hue = used > 0.9 ? 0 : used > 0.75 ? 30 : 150;
+    card.innerHTML =
+      `<div class="drive-card-top"><span class="drive-card-letter">${escapeHtml(d.letter)}</span>` +
+      `<span class="drive-card-label">${escapeHtml(d.label || (d.fs ? d.fs + " drive" : "Local drive"))}</span></div>` +
+      `<div class="drive-card-bar"><div class="drive-card-fill" style="width:${pct}%;background:hsl(${hue} 65% 50%)"></div></div>` +
+      `<div class="drive-card-sub">${escapeHtml(fmtBytes(d.free))} free of ${escapeHtml(fmtBytes(d.total))} · ${pct}% used</div>`;
+    card.addEventListener("click", () => startScan(d.letter));
+    elDriveCards.appendChild(card);
+  }
 }
 
 // ---------- tooltip ----------
