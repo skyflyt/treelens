@@ -10,6 +10,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  versions:
+    name: Version sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check package.json / tauri.conf.json / Cargo.toml agree
+        shell: bash
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          conf=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          cargo=$(grep -m1 -A3 '^\[workspace.package\]' Cargo.toml | grep '^version' | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "package.json=$pkg  tauri.conf.json=$conf  Cargo.toml=$cargo"
+          if [ "$pkg" != "$conf" ] || [ "$pkg" != "$cargo" ]; then
+            echo "::error::version mismatch — keep package.json, tauri.conf.json, and Cargo.toml [workspace.package] in sync"
+            exit 1
+          fi
+
   rust:
     name: Rust check + test
     runs-on: windows-latest
@@ -25,9 +42,7 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            .
-            src-tauri
+          workspaces: ". -> target"
 
       - name: fmt
         run: cargo fmt --all -- --check
@@ -35,8 +50,14 @@ jobs:
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: test
+      # The `treelens` (Tauri) crate is excluded here because its
+      # generate_context! needs ../ui/dist, which doesn't exist in this job.
+      # Its tests + --selftest run in the `app` job below after the UI is built.
+      - name: test (library crates)
         run: cargo test --workspace --exclude treelens
+
+      - name: bench compile check
+        run: cargo bench --workspace --no-run
 
   ui:
     name: UI typecheck + build
@@ -45,14 +66,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
 
-  tauri-build:
-    name: Tauri debug build
+  app:
+    name: Tauri build + selftest
     runs-on: windows-latest
     needs: [rust, ui]
     steps:
@@ -62,14 +83,23 @@ jobs:
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            .
-            src-tauri
+          workspaces: ". -> target"
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - run: npm ci
+
+      # Build the frontend first so generate_context! can embed ui/dist.
+      - name: Build UI
+        run: npm run build
+
+      - name: Test Tauri crate
+        run: cargo test -p treelens
+
+      - name: Self-test (file ops + checksum + compare + stego round-trips)
+        run: cargo run -p treelens -- --selftest
+
       - name: Tauri build (debug)
         run: npx tauri build --debug --no-bundle
 

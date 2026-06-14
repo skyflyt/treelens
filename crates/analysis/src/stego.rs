@@ -514,12 +514,9 @@ mod format_append {
             if pos + 8 > bytes.len() {
                 return None; // truncated header
             }
-            let len = u32::from_be_bytes([
-                bytes[pos],
-                bytes[pos + 1],
-                bytes[pos + 2],
-                bytes[pos + 3],
-            ]) as usize;
+            let len =
+                u32::from_be_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]])
+                    as usize;
             let ctype = &bytes[pos + 4..pos + 8];
             // total chunk = len(4) + type(4) + data(len) + crc(4)
             let chunk_end = pos.checked_add(12)?.checked_add(len)?;
@@ -559,16 +556,15 @@ mod format_append {
             let marker = bytes[mpos];
             pos = mpos + 1;
             match marker {
-                0xD9 => return Some(pos),                 // EOI
-                0xD8 | 0x01 => continue,                  // SOI / TEM: no payload
-                0xD0..=0xD7 => continue,                  // RSTn: no payload
+                0xD9 => return Some(pos), // EOI
+                0xD8 | 0x01 => continue,  // SOI / TEM: no payload
+                0xD0..=0xD7 => continue,  // RSTn: no payload
                 0xDA => {
                     // SOS: 2-byte header length, then entropy data until next marker.
                     if pos + 2 > bytes.len() {
                         return None;
                     }
-                    let seg_len =
-                        u16::from_be_bytes([bytes[pos], bytes[pos + 1]]) as usize;
+                    let seg_len = u16::from_be_bytes([bytes[pos], bytes[pos + 1]]) as usize;
                     pos = pos.checked_add(seg_len)?;
                     if pos > bytes.len() {
                         return None;
@@ -588,8 +584,7 @@ mod format_append {
                     if pos + 2 > bytes.len() {
                         return None;
                     }
-                    let seg_len =
-                        u16::from_be_bytes([bytes[pos], bytes[pos + 1]]) as usize;
+                    let seg_len = u16::from_be_bytes([bytes[pos], bytes[pos + 1]]) as usize;
                     if seg_len < 2 {
                         return None;
                     }
@@ -1030,7 +1025,11 @@ mod tests {
             .iter()
             .find(|f| f.method == Method::Whitespace)
             .unwrap();
-        assert!(!ws.suspicious, "should not recover a payload: {}", ws.detail);
+        assert!(
+            !ws.suspicious,
+            "should not recover a payload: {}",
+            ws.detail
+        );
         assert!(!ws.statistical_anomaly, "1/3 trailing should be normal");
     }
 
@@ -1059,7 +1058,7 @@ mod tests {
     /// marker walker without needing a JPEG encoder feature.
     fn make_jpeg() -> Vec<u8> {
         let mut v = vec![0xFF, 0xD8]; // SOI
-        // APP0, length 4 (covers the length field + 2 payload bytes)
+                                      // APP0, length 4 (covers the length field + 2 payload bytes)
         v.extend_from_slice(&[0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00]);
         // SOS, length 4 + 2 header bytes
         v.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x04, 0x00, 0x00]);
@@ -1083,7 +1082,11 @@ mod tests {
             .iter()
             .find(|f| f.method == Method::FormatAppend)
             .unwrap();
-        assert!(!fa_clean.suspicious, "clean jpeg flagged: {}", fa_clean.detail);
+        assert!(
+            !fa_clean.suspicious,
+            "clean jpeg flagged: {}",
+            fa_clean.detail
+        );
 
         // A payload that itself contains an EOI marker (FF D9) must still be
         // recovered — the walker pins the real EOI before the appended data.
@@ -1132,7 +1135,11 @@ mod tests {
             .iter()
             .find(|f| f.method == Method::FormatAppend)
             .unwrap();
-        assert!(!fa_clean.suspicious, "clean gif flagged: {}", fa_clean.detail);
+        assert!(
+            !fa_clean.suspicious,
+            "clean gif flagged: {}",
+            fa_clean.detail
+        );
 
         // Payload containing a 0x3B (the trailer byte) must still round-trip.
         let secret = b"tail;with;semicolons";

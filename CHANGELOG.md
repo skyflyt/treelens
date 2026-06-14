@@ -4,6 +4,59 @@ All notable changes to Treelens are documented here.
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning is [SemVer](https://semver.org/) (0.x while pre-1.0).
 
+## [0.4.0] — 2026-06-13
+
+A hardening + features release from a full audit and deep-dive test, delivered
+as ten focused sprints.
+
+### Added
+- **Search & filter** (Search side-tab): find files/folders anywhere under the
+  current view by name substring, with size and files/dirs-only filters; results
+  show full paths and jump you to the item. `Ctrl/Cmd+F` opens it.
+- **Click-to-sort columns** in the Contents list (Name / Size / % / Modified)
+  with a direction indicator; choice persists.
+- **Export** the current subtree to **CSV or JSON** (streamed, scales to whole
+  drives).
+- **Duplicate finder**: byte-identical files via a size → 4 KiB-prefix-hash →
+  full-hash funnel, grouped most-reclaimable-first, with one-click "recycle
+  redundant copies (keep one)".
+- **Toast notifications** for non-blocking success/warn/error surfacing, plus a
+  **keyboard-shortcuts help overlay** (`?` / `F1`).
+- **Portable on-disk config** (`treelens.config.json` next to the exe, or
+  `%APPDATA%\Treelens` fallback) so settings travel with a portable copy.
+
+### Changed
+- **Treemap performance**: the static layer is cached to an offscreen canvas, so
+  hover/selection no longer re-render every rect — large maps stay smooth.
+  Window-resize bursts are coalesced to one relayout per frame.
+- File-comparison reads each file **once** (was twice) in a single streaming
+  pass, and reports an explicit *length-only difference*.
+- The size-mode toggle no longer refetches the breadcrumb.
+
+### Fixed
+- **Core correctness**: `Tree::build` is now orphan/cycle-safe and no longer
+  relies on a release-stripped debug assert; `path()` is bounds/cycle-guarded;
+  the scanner guards a reparse-point scan root, caps `u32` index overflow, and
+  cancels on a dead record receiver.
+- **Cross-tab scan correctness**: scan events carry their tab id, so a scan that
+  finishes in a background tab updates that tab's snapshot instead of corrupting
+  the foreground view. Added a per-tab scan watchdog and centralized stale-render
+  (`drillSeq`) guards on expand and size-mode changes.
+- **Steganography accuracy**: PNG/JPEG/GIF appended-data detection now parses
+  real container structure (chunk/segment/block walks) instead of substring-
+  searching for end markers — correct even when markers appear in pixel data or
+  the payload; whitespace capacity matches what embed accepts; LSB chi-square is
+  windowed to catch partial embeds.
+
+### Tooling
+- CI: version-sync check across package.json / tauri.conf.json / Cargo.toml,
+  Node 22, the Tauri crate's tests + `--selftest` run after the UI builds, and a
+  criterion build-bench compile check. Added `dependabot.yml`, `CONTRIBUTING.md`,
+  and `SECURITY.md`. Release also syncs the tag version into package.json so the
+  in-app version label is correct.
+
+[0.4.0]: https://github.com/skyflyt/treelens/releases/tag/v0.4.0
+
 ## [0.3.7] — 2026-06-13
 
 ### Changed

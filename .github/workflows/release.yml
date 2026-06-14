@@ -26,7 +26,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - run: npm ci
@@ -46,6 +46,13 @@ jobs:
           $cargo = Get-Content $cargoPath -Raw
           $cargo = $cargo -replace '(?ms)(^\[workspace\.package\][\s\S]*?\nversion\s*=\s*")[^"]+("\s*$)', "`${1}$version`${2}"
           Set-Content $cargoPath $cargo -NoNewline
+          # Patch package.json too — the in-app version label (__APP_VERSION__)
+          # is a Vite define read from package.json at build time, so without
+          # this the UI would show the previous version on a fresh release.
+          $pkgPath = "package.json"
+          $pkg = Get-Content $pkgPath -Raw
+          $pkg = $pkg -replace '("version":\s*")[^"]+(")', "`${1}$version`${2}"
+          Set-Content $pkgPath $pkg -NoNewline
 
       - name: Tauri build (release)
         run: npx tauri build
