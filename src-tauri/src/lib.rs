@@ -563,6 +563,51 @@ fn export_tree(
     Ok(count)
 }
 
+/// Find duplicate files (byte-identical) in the subtree under `root`. Gathers
+/// candidate files (≥ `min_size`) with their absolute paths, then runs the
+/// size → prefix-hash → full-hash duplicate funnel.
+#[tauri::command]
+fn find_duplicates(
+    tab: u32,
+    root: u32,
+    min_size: u64,
+    state: State<'_, AppState>,
+) -> Result<analysis::DupeReport, CommandError> {
+    let _timer = TimedSpan::new("find_duplicates");
+    let tabs = state.tabs.read();
+    let td = tabs.get(&tab).ok_or_else(|| CommandError {
+        message: "no scan loaded".into(),
+    })?;
+    if root as usize >= td.tree.nodes.len() {
+        return Err(CommandError {
+            message: format!("invalid root {root}"),
+        });
+    }
+
+    // Gather (path, size) for regular files at/under root, building paths
+    // incrementally (parent path + name) to avoid an O(depth) re-walk per file.
+    let root_path = td.scan_path.to_string_lossy().to_string();
+    let mut files: Vec<(String, u64)> = Vec::new();
+    let mut stack: Vec<(u32, String)> = vec![(root, root_path)];
+    while let Some((idx, path)) = stack.pop() {
+        let n = &td.tree.nodes[idx as usize];
+        if !n.is_dir() && !n.is_reparse() && n.logical >= min_size {
+            files.push((path.clone(), n.logical));
+        }
+        for c in td.tree.child_indexes(idx) {
+            let cname = &td.tree.nodes[c as usize].name;
+            let mut cpath = path.clone();
+            if !cpath.ends_with(['\\', '/']) {
+                cpath.push('\\');
+            }
+            cpath.push_str(cname);
+            stack.push((c, cpath));
+        }
+    }
+
+    Ok(analysis::find_duplicates(&files, 2000))
+}
+
 /// Quote a CSV field if it contains a comma, quote, CR, or LF (RFC 4180).
 fn csv_field(s: &str) -> String {
     if s.contains([',', '"', '\n', '\r']) {
@@ -1428,6 +1473,7 @@ pub fn run() {
             node_summary,
             search,
             export_tree,
+            find_duplicates,
             open_in_explorer,
             open_in_terminal,
             copy_path,

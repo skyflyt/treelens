@@ -166,6 +166,7 @@ async function switchToTab(id: number) {
   (elNewFileBtn as HTMLButtonElement).disabled = state.currentRoot === null;
   (elJunkBtn as HTMLButtonElement).disabled = state.currentRoot === null;
   (elExportBtn as HTMLButtonElement).disabled = state.currentRoot === null;
+  (elDupesBtn as HTMLButtonElement).disabled = state.currentRoot === null;
 }
 
 async function newTab() {
@@ -213,6 +214,7 @@ const elNewFolderBtn = $("#new-folder-btn");
 const elNewFileBtn = $("#new-file-btn");
 const elJunkBtn = $("#junk-btn");
 const elExportBtn = $("#export-btn");
+const elDupesBtn = $("#dupes-btn");
 const elModeAlloc = $("#mode-allocated");
 const elModeLogical = $("#mode-logical");
 const elHeatBtn = $("#heat-btn");
@@ -295,6 +297,9 @@ const treemap = new Treemap(
     if (state.currentRoot !== null) runJunkFinder(state.currentRoot);
   });
   elExportBtn.addEventListener("click", () => exportCurrentTree());
+  elDupesBtn.addEventListener("click", () => {
+    if (state.currentRoot !== null) runDuplicateFinder(state.currentRoot);
+  });
   elScanCancel.addEventListener("click", () => {
     ipc.scanCancel().catch(() => {});
   });
@@ -580,6 +585,7 @@ async function handleScanComplete(p: {
   (elNewFileBtn as HTMLButtonElement).disabled = false;
   (elJunkBtn as HTMLButtonElement).disabled = false;
   (elExportBtn as HTMLButtonElement).disabled = false;
+  (elDupesBtn as HTMLButtonElement).disabled = false;
   expandedIdxs.clear();
   // Name the active tab after the scanned folder's last path segment.
   const t = tabs.find((x) => x.id === activeTabId);
@@ -1727,6 +1733,99 @@ function showJunkModal(report: import("./ipc").JunkReport) {
       }
     } catch (e) {
       alert(`Delete failed: ${(e as Error).message ?? e}`);
+    } finally {
+      popLoading();
+      if (state.scanRootPath) startScan(state.scanRootPath);
+    }
+  });
+}
+
+async function runDuplicateFinder(idx: number) {
+  pushLoading("Hashing files to find duplicates…");
+  let report;
+  try {
+    // Skip tiny files: dupes under 4 KiB rarely matter and inflate the list.
+    report = await ipc.findDuplicates(idx, 4096);
+  } catch (e) {
+    popLoading();
+    alert(`Duplicate scan failed: ${(e as Error).message ?? e}`);
+    return;
+  }
+  popLoading();
+  if (report.total_groups === 0) {
+    alert("No duplicate files found here (files ≥ 4 KB compared by content).");
+    return;
+  }
+  showDupesModal(report);
+}
+
+function showDupesModal(report: import("./ipc").DupeReport) {
+  // Recycle all but the first copy in every group.
+  const redundant = report.groups.flatMap((g) => g.paths.slice(1));
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  const truncNote = report.truncated
+    ? ` (showing top ${report.groups.length.toLocaleString()})`
+    : "";
+  backdrop.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <div class="modal-title">Duplicates — ${report.total_groups.toLocaleString()} groups, ${fmtBytes(
+          report.total_redundant_bytes,
+        )} reclaimable${truncNote}</div>
+        <button class="btn ghost small" id="dp-close">✕</button>
+      </div>
+      <div class="modal-body" style="max-height:55vh; min-width: 660px"></div>
+      <div class="modal-foot">
+        <span class="muted small" style="margin-right:auto">Each group is byte-identical. "Recycle redundant" keeps the first copy of each.</span>
+        <button class="btn" id="dp-recycle">Recycle redundant (${redundant.length.toLocaleString()})</button>
+        <button class="btn" id="dp-cancel">Close</button>
+      </div>
+    </div>`;
+  const body = backdrop.querySelector(".modal-body")!;
+  for (const g of report.groups) {
+    const group = document.createElement("div");
+    group.className = "dupe-group";
+    const head = document.createElement("div");
+    head.className = "dupe-group-head";
+    head.innerHTML = `<span>${g.paths.length} copies · ${escapeHtml(
+      fmtBytes(g.size),
+    )} each · <span class="muted">${escapeHtml(fmtBytes(g.redundant_bytes))} reclaimable</span></span>`;
+    group.appendChild(head);
+    g.paths.forEach((p, i) => {
+      const row = document.createElement("div");
+      row.className = "dupe-path" + (i === 0 ? " keep" : "");
+      row.innerHTML =
+        `<span class="dupe-tag">${i === 0 ? "keep" : "dup"}</span>` +
+        `<span class="dupe-pathtext">${escapeHtml(p)}</span>`;
+      group.appendChild(row);
+    });
+    body.appendChild(group);
+  }
+  document.body.appendChild(backdrop);
+  const close = () => backdrop.remove();
+  backdrop.querySelector("#dp-close")?.addEventListener("click", close);
+  backdrop.querySelector("#dp-cancel")?.addEventListener("click", close);
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) close();
+  });
+  backdrop.querySelector("#dp-recycle")?.addEventListener("click", async () => {
+    if (redundant.length === 0) return;
+    if (
+      !confirm(
+        `Move ${redundant.length.toLocaleString()} redundant copies to the Recycle Bin?\n\nOne copy of each set is kept. You can restore from Explorer if needed.`,
+      )
+    )
+      return;
+    close();
+    pushLoading("Recycling duplicates…");
+    try {
+      const n = await ipc.recyclePaths(redundant);
+      elStatusSummary.textContent = `Recycled ${n} of ${redundant.length} duplicate copies (${fmtBytes(
+        report.total_redundant_bytes,
+      )} flagged)`;
+    } catch (e) {
+      alert(`Recycle failed: ${(e as Error).message ?? e}`);
     } finally {
       popLoading();
       if (state.scanRootPath) startScan(state.scanRootPath);

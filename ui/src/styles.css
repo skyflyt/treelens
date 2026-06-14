@@ -600,6 +600,45 @@ body {
   flex: 1;
 }
 
+/* duplicate finder modal */
+.dupe-group {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+.dupe-group-head {
+  padding: 6px 10px;
+  background: var(--bg-elev-1);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.dupe-path {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  word-break: break-all;
+}
+.dupe-path.keep { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.dupe-tag {
+  flex: none;
+  text-transform: uppercase;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+.dupe-path.keep .dupe-tag {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.dupe-pathtext { min-width: 0; }
+
 /* status bar */
 .status {
   display: flex;

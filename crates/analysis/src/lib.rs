@@ -9,6 +9,7 @@
 
 pub mod checksums;
 pub mod compare;
+pub mod dupes;
 pub mod stego;
 
 // Re-exported so consumers (e.g. the app's --selftest) can synthesize test
@@ -17,6 +18,7 @@ pub use image;
 
 pub use checksums::{checksum_file, ChecksumSet};
 pub use compare::{compare_files, CompareResult};
+pub use dupes::{find_duplicates, DupeGroup, DupeReport};
 
 use serde::Serialize;
 

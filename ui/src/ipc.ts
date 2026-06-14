@@ -139,6 +139,20 @@ export interface JunkReport {
   truncated: boolean;
 }
 
+export interface DupeGroup {
+  size: number;
+  sha256: string;
+  paths: string[];
+  redundant_bytes: number;
+}
+
+export interface DupeReport {
+  groups: DupeGroup[];
+  total_groups: number;
+  total_redundant_bytes: number;
+  truncated: boolean;
+}
+
 export interface MutationResult {
   ok: boolean;
   /** Full path of the created/renamed item. */
@@ -311,6 +325,9 @@ export const ipc = {
   },
   exportTree(root: number, format: "csv" | "json", dest: string) {
     return invoke<number>("export_tree", { tab: activeTab, root, format, dest });
+  },
+  findDuplicates(root: number, minSize: number) {
+    return invoke<DupeReport>("find_duplicates", { tab: activeTab, root, minSize });
   },
   listDrives() {
     return invoke<DriveEntry[]>("list_drives");
