@@ -13,6 +13,14 @@
 //! `useMftFastPath` setting is on. Any failure at any stage of this module
 //! causes the caller to fall back to the directory walk -- this module never
 //! panics and always returns a `Result`.
+//!
+//! NTFS metadata files ($MFT, $LogFile, $Bitmap, etc.) are in-use
+//! FILE records like any other and are parsed/emitted the same way -- they
+//! are NOT filtered out, so they show up as ordinary (if unusual) files under
+//! the volume root. This matches the spirit of 'honest totals': they are real
+//! bytes on disk and the directory walk has no way to hide them either (they
+//! aren't reachable via a walk at all, in fact, so this is a source of small,
+//! expected totals differences between the two paths on the same volume).
 
 mod boot;
 mod record;
@@ -319,6 +327,8 @@ fn run_with_handle(
             }
         }
     }
+    let stat_fallback_set: std::collections::HashSet<u64> =
+        stat_fallback_frns.iter().copied().collect();
 
     // Hard-link dedup: pick one canonical (parent, name) per FRN.
     let mut canonical: HashMap<u64, (u64, String)> = HashMap::new();
@@ -356,8 +366,11 @@ fn run_with_handle(
         record_tx,
         &base_entries,
         &canonical,
+        &stat_fallback_set,
         &mut files_seen,
         &mut dirs_seen,
+        &mut errors,
+        &mut err_samples,
     )?;
 
     let duration_ms = start.elapsed().as_millis() as u64;
@@ -399,8 +412,11 @@ fn emit_records(
     record_tx: &Sender<ScanRecord>,
     base_entries: &HashMap<u64, RawEntry>,
     canonical: &HashMap<u64, (u64, String)>,
+    stat_fallback_set: &std::collections::HashSet<u64>,
     files_seen: &mut u64,
     dirs_seen: &mut u64,
+    errors: &mut u64,
+    err_samples: &mut Vec<String>,
 ) -> Result<(), MftError> {
     let excluder = Excluder::new(&opts.excludes);
     let has_excludes = !excluder.is_empty();
@@ -566,15 +582,49 @@ fn emit_records(
         // does not affect size/count totals, only badge display.
         let _ = (FLAG_HIDDEN, FLAG_READONLY, FLAG_SYSTEM);
 
-        let mtime = filetime_to_unix(entry.parsed.mtime_100ns.unwrap_or(0));
+        let mut mtime = filetime_to_unix(entry.parsed.mtime_100ns.unwrap_or(0));
+        let mut logical = entry.parsed.logical_size;
+        let mut allocated = entry.parsed.allocated_size;
+
+        // Per-file stat fallback (spec: $ATTRIBUTE_LIST common-case miss ->
+        // GetFileAttributesEx/NtQueryInformationFile-equivalent stat for just
+        // this file). std::fs::metadata is the portable equivalent of
+        // GetFileAttributesEx here and avoids a second raw Win32 binding for
+        // a rare, non-hot-path case. If the stat also fails, keep whatever
+        // (possibly incomplete) values the MFT parse produced and count the
+        // file in the inaccessible-items report, matching the spec's
+        // "count it in the inaccessible-items report if that fails too."
+        if stat_fallback_set.contains(frn) {
+            let full_rel = path_cache.get(frn).cloned().unwrap_or_else(|| name.clone());
+            let full_abs = format!("{}{}", opts.root.to_string_lossy(), full_rel);
+            match std::fs::metadata(&full_abs) {
+                Ok(meta) => {
+                    if !entry.is_dir {
+                        logical = meta.len();
+                        allocated = crate::align_up(logical, opts.cluster_size);
+                    }
+                    if let Ok(modified) = meta.modified() {
+                        if let Ok(secs) = modified.duration_since(std::time::UNIX_EPOCH) {
+                            mtime = secs.as_secs() as i64;
+                        }
+                    }
+                }
+                Err(_) => {
+                    *errors += 1;
+                    if err_samples.len() < MAX_ERROR_SAMPLES {
+                        err_samples.push(full_abs);
+                    }
+                }
+            }
+        }
 
         if record_tx
             .send(ScanRecord {
                 idx,
                 name: name.clone(),
                 parent: parent_idx,
-                logical: entry.parsed.logical_size,
-                allocated: entry.parsed.allocated_size,
+                logical,
+                allocated,
                 mtime,
                 flags,
             })

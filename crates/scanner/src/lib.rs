@@ -598,7 +598,7 @@ fn worker(
 }
 
 #[inline]
-fn align_up(n: u64, align: u64) -> u64 {
+pub(crate) fn align_up(n: u64, align: u64) -> u64 {
     if align == 0 {
         n
     } else {
