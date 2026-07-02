@@ -58,7 +58,7 @@
       <div id="admin-banner" class="banner banner-warn" hidden>
         <span>
           Running without administrator. Some files won't be visible.
-          <strong>Switch to admin</strong> for full visibility (and a future 10× faster MFT scan).
+          <strong>Switch to admin</strong> for full visibility + MFT-speed whole-drive scans.
         </span>
         <span class="banner-actions">
           <button class="btn small primary" id="elevate-btn">Relaunch as admin</button>
@@ -206,6 +206,7 @@
         </span>
         <span id="status-summary" aria-live="polite">Ready.</span>
         <button class="status-pill" id="scan-errors-pill" hidden title="Some items could not be read — click for details"></button>
+        <span class="status-pill mode" id="scan-mode-pill" hidden title="Which scan strategy produced this tree"></span>
         <span class="status-spacer"></span>
         <button class="btn icon" id="help-btn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
         <span id="status-version" class="muted small"></span>

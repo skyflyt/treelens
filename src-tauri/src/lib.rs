@@ -39,6 +39,9 @@ struct ScanCompletePayload {
     errors: u64,
     duration_ms: u64,
     root_path: String,
+    /// "mft" or "walk" -- which scan strategy actually produced this tree,
+    /// surfaced by the status-bar mode pill.
+    mode: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -64,6 +67,7 @@ async fn scan_start(
     path: String,
     tab: u32,
     excludes: Option<Vec<String>>,
+    use_mft_fast_path: Option<bool>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), CommandError> {
@@ -83,6 +87,7 @@ async fn scan_start(
     let cancel = Cancel::new();
     let mut opts = ScanOptions::new(root.clone());
     opts.excludes = excludes.unwrap_or_default();
+    opts.use_mft_fast_path = use_mft_fast_path.unwrap_or(true);
 
     // Channel sizes: records can be high-volume; events are sparse.
     let (rec_rx, evt_rx, handle) = scanner::spawn(opts, cancel.clone(), 8192, 32);
@@ -167,7 +172,8 @@ fn collect_scan(
     let mut last_progress: Option<scanner::Progress> = None;
     let mut cancelled = false;
     let mut duration_ms: u64 = 0;
-    // Reset the inaccessible-path sample for this fresh scan.
+    let mut mode = "walk".to_string(); // default if ModeUsed never arrives (shouldn't happen)
+                                       // Reset the inaccessible-path sample for this fresh scan.
     *state.last_errors.lock() = Vec::new();
 
     // Drain records and events concurrently.
@@ -190,6 +196,12 @@ fn collect_scan(
                         };
                         let _ = app.emit("scan:progress", payload.clone());
                         last_progress = Some(p);
+                    }
+                    ScanEvent::ModeUsed(m) => {
+                        mode = match m {
+                            scanner::ScanMode::Mft => "mft".to_string(),
+                            scanner::ScanMode::Walk => "walk".to_string(),
+                        };
                     }
                     ScanEvent::Errors(paths) => {
                         *state.last_errors.lock() = paths;
@@ -232,6 +244,7 @@ fn collect_scan(
         errors,
         duration_ms,
         root_path: root.to_string_lossy().to_string(),
+        mode,
     };
     let _ = app.emit("scan:complete", payload);
 }
@@ -621,6 +634,7 @@ fn open_scan(
         errors: 0,
         duration_ms: 0,
         root_path: snap.scan_path,
+        mode: "saved".to_string(),
     })
 }
 
