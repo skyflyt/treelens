@@ -1113,6 +1113,13 @@ body.resizing * { cursor: col-resize !important; }
   cursor: pointer;
 }
 .status-pill:hover { background: color-mix(in srgb, #d6a206 30%, transparent); }
+.status-pill.mode {
+  cursor: default;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
 .se-row {
   font-family: var(--font-mono);
   font-size: 11px;

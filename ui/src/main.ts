@@ -53,6 +53,8 @@ interface UiState {
   sideWidth: number;
   /** List row density. */
   density: "comfortable" | "compact";
+  /** Use the NTFS $MFT fast path when eligible (elevated + volume root + NTFS). */
+  useMftFastPath: boolean;
 }
 
 const state: UiState = {
@@ -76,6 +78,7 @@ const state: UiState = {
   dupeMinSize: 4096,
   sideWidth: 460,
   density: "comfortable",
+  useMftFastPath: true,
 };
 
 function prefersDark(): boolean {
@@ -197,6 +200,7 @@ async function switchToTab(id: number) {
   (elSaveScanBtn as HTMLButtonElement).disabled = state.scanRoot === null;
   // The errors pill reflects the last scan globally; clear it on tab switch.
   elScanErrorsPill.hidden = true;
+  elScanModePill.hidden = true;
   updateTreemapChrome();
 }
 
@@ -284,6 +288,7 @@ const elSearchMinSize = $<HTMLSelectElement>("#search-minsize");
 const elTypesList = $("#types-list");
 const elContentsFilter = $<HTMLInputElement>("#contents-filter");
 const elScanErrorsPill = $("#scan-errors-pill");
+const elScanModePill = $("#scan-mode-pill");
 const elSelectionBar = $("#selection-bar");
 const elSelectionInfo = $("#selection-info");
 const elMain = $(".main");
@@ -647,6 +652,7 @@ function startScan(rootPath: string) {
   const tab = activeTabId;
   pushRecent(rootPath);
   elScanErrorsPill.hidden = true;
+  elScanModePill.hidden = true;
   state.scanning = true;
   state.scanRoot = null;
   state.currentRoot = null;
@@ -675,7 +681,7 @@ function startScan(rootPath: string) {
   saveConfig();
   scanningTabs.add(tab);
   armScanWatchdog(tab);
-  ipc.scanStart(rootPath, tab, state.excludes).catch((e) => {
+  ipc.scanStart(rootPath, tab, state.excludes, state.useMftFastPath).catch((e) => {
     clearScanWatchdog(tab);
     if (tab === activeTabId) {
       elScanningOverlay.hidden = true;
@@ -708,6 +714,7 @@ async function handleScanComplete(p: {
   errors?: number;
   duration_ms: number;
   root_path: string;
+  mode: string;
 }) {
   clearScanWatchdog(p.tab);
 
@@ -761,6 +768,7 @@ async function handleScanComplete(p: {
     `${fmtCount(p.files)} files · ${fmtCount(p.dirs)} folders · ${fmtBytes(p.bytes)} · scanned in ${fmtDuration(p.duration_ms)}`;
   updateTreemapChrome();
   updateScanErrorsPill(p.errors ?? 0);
+  updateScanModePill(p.mode);
 }
 
 /** Show/refresh the status-bar pill counting inaccessible items, if any. */
@@ -772,6 +780,21 @@ function updateScanErrorsPill(errors: number) {
     elScanErrorsPill.hidden = true;
   }
 }
+function updateScanModePill(mode: string) {
+  if (mode === "mft") {
+    elScanModePill.textContent = "MFT";
+    elScanModePill.title = "This scan used the NTFS $MFT fast path";
+    elScanModePill.hidden = false;
+  } else if (mode === "walk") {
+    elScanModePill.textContent = "Walk";
+    elScanModePill.title = "This scan used the standard directory walk";
+    elScanModePill.hidden = false;
+  } else {
+    // "saved" (opened a .treelens file) or unknown -- no mode pill to show.
+    elScanModePill.hidden = true;
+  }
+}
+
 
 async function showScanErrors() {
   let report;
@@ -1310,6 +1333,9 @@ function openSettings() {
             ${dupOpts.map(([v, t]) => `<option value="${v}" ${state.dupeMinSize === v ? "selected" : ""}>${t}</option>`).join("")}
           </select>
         </label>
+        <label class="set-row"><span>Use NTFS $MFT fast path <span class="muted small">(requires elevation)</span></span>
+          <input type="checkbox" id="set-mft" ${state.useMftFastPath ? "checked" : ""} />
+        </label>
         <div class="set-row set-col">
           <span>Scan exclusions <span class="muted small">(one glob per line — e.g. <code>node_modules</code>, <code>*.tmp</code>, <code>C:\\Windows\\*</code>). Applies to the next scan.</span></span>
           <textarea id="set-excludes" rows="6" spellcheck="false" placeholder="node_modules&#10;*.tmp"></textarea>
@@ -1370,6 +1396,10 @@ function openSettings() {
     const v = (e.target as HTMLSelectElement).value;
     state.density = v === "compact" ? "compact" : "comfortable";
     applyDensity();
+    saveConfig();
+  });
+  backdrop.querySelector("#set-mft")?.addEventListener("change", (e) => {
+    state.useMftFastPath = (e.target as HTMLInputElement).checked;
     saveConfig();
   });
 }
@@ -3166,6 +3196,7 @@ function applyConfig(raw: string | null) {
       if (typeof v.sideWidth === "number")
         state.sideWidth = Math.min(900, Math.max(280, Math.round(v.sideWidth)));
       if (v.density === "compact" || v.density === "comfortable") state.density = v.density;
+      if (typeof v.useMftFastPath === "boolean") state.useMftFastPath = v.useMftFastPath;
     }
     applySideWidth();
     applyDensity();
@@ -3207,6 +3238,7 @@ function saveConfig() {
     dupeMinSize: state.dupeMinSize,
     sideWidth: state.sideWidth,
     density: state.density,
+    useMftFastPath: state.useMftFastPath,
   };
   const json = JSON.stringify(v);
   // Fast local cache (sync) + durable portable file (async, best-effort).

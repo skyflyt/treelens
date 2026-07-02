@@ -36,6 +36,17 @@ Grab the latest portable EXE from [Releases](https://github.com/skyflyt/treelens
 - **Admin banner** — runs without admin (some files hidden) and offers a one-click elevated relaunch for full visibility. File operations work identically in both modes.
 - **Light + dark theme** following OS by default; manual override is persisted.
 
+## New in v0.7
+
+- **NTFS `$MFT` fast path** — on an elevated, NTFS, whole-volume scan (e.g.
+  `C:\`), Treelens now reads the `$MFT` directly instead of walking the
+  directory tree, cutting a multi-minute scan down to seconds. Falls back
+  silently to the standard walk if the volume isn't NTFS, the scan target
+  isn't a drive root, the process isn't elevated, or the new toggle is off
+  -- never a hard failure. A status-bar pill ("MFT" / "Walk") shows which
+  path actually ran; toggle it in Settings ("Use NTFS `$MFT` fast path,
+  requires elevation" -- on by default).
+
 ## New in v0.6 (UI/UX)
 
 - **Drive overview cards** on the start screen, a **command palette**
@@ -73,7 +84,7 @@ Treelens is the answer I wanted: a parallel scanner, a visual treemap, a familia
 | ✅ v0.4 | Correctness/perf hardening, portable `treelens.config.json`, search/filter, CSV/JSON export, duplicate finder |
 | ✅ v0.5 | Scan exclusions, file-type breakdown, save/open scan snapshots, settings panel, recents, treemap depth/legend/keyboard nav, inaccessible-path reporting |
 | ✅ v0.6 | UI/UX polish — drive cards, command palette, selection bar, resizable panel, animated treemap, richer tooltip, density, motion/a11y |
-| v0.x | NTFS MFT fast path (FSCTL_ENUM_USN_DATA) for the 10× scan speedup |
+| ✅ v0.7 | NTFS `$MFT` fast path -- elevated whole-volume scans in seconds |
 | v0.x | Multi-drive overview, "what changed since last scan" diff |
 
 Full plan: [PLAN.md](PLAN.md).

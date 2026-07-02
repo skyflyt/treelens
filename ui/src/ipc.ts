@@ -114,6 +114,7 @@ export interface ScanComplete {
   errors: number;
   duration_ms: number;
   root_path: string;
+  mode: string;
 }
 
 export interface ScanCancelled {
@@ -227,8 +228,8 @@ export const ipc = {
   /** Scan into a specific tab id (defaults to the active tab). `excludes` are
    *  glob patterns for entries to skip (name globs like `node_modules`/`*.tmp`,
    *  or full-path globs containing a separator). */
-  scanStart(path: string, tab: number = activeTab, excludes: string[] = []) {
-    return invoke<void>("scan_start", { path, tab, excludes });
+  scanStart(path: string, tab: number = activeTab, excludes: string[] = [], useMftFastPath: boolean = true) {
+    return invoke<void>("scan_start", { path, tab, excludes, useMftFastPath });
   },
   scanCancel() {
     return invoke<void>("scan_cancel");
