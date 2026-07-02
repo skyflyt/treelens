@@ -1,9 +1,13 @@
-//! Treelens scanner — parallel directory walk that produces a flat record stream.
+//! Treelens scanner: parallel directory walk (default/fallback) plus, on
+//! Windows, an NTFS `$MFT` fast path -- both producing the same flat
+//! record stream.
 //!
 //! v0.1 strategy: `std::fs::read_dir` per directory, fanned out across a rayon
 //! thread pool via a work-stealing queue. Works on any filesystem and at any
-//! privilege level. The MFT fast path (FSCTL_ENUM_USN_DATA) is intentionally
-//! deferred to v0.2 — see `PLAN.md` §3.2 path 1.
+//! privilege level -- this remains the fallback for non-NTFS volumes,
+//! non-elevated processes, or a scan target that isn't a volume root. v0.7
+//! adds the `mft` module (see its doc comment) as an opt-in, much faster
+//! primary path for eligible whole-volume scans.
 //!
 //! Output is a stream of [`Record`]s emitted through a [`crossbeam_channel`].
 //! The receiver builds the arena tree (see the `tree` crate).
@@ -19,6 +23,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
+
+#[cfg(windows)]
+mod mft;
 
 pub const FLAG_DIR: u16 = 1 << 0;
 pub const FLAG_REPARSE: u16 = 1 << 1;
@@ -60,11 +67,25 @@ pub struct Progress {
     pub elapsed_ms: u64,
 }
 
+/// Which strategy actually produced the record stream for a scan. Surfaced to
+/// the UI (status-bar pill) via ScanEvent::ModeUsed, emitted once near the
+/// start of whichever path runs -- additive, does not change Done's shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScanMode {
+    /// Raw \ parse (NTFS fast path).
+    Mft,
+    /// The parallel directory walk (default / fallback).
+    Walk,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ScanEvent {
     Progress(Progress),
     /// A capped sample of paths that couldn't be read during the scan.
     Errors(Vec<String>),
+    /// Which strategy is servicing this scan. Emitted once, before the first
+    /// Progress event.
+    ModeUsed(ScanMode),
     Done {
         duration_ms: u64,
     },
@@ -85,6 +106,10 @@ pub struct ScanOptions {
     /// `node_modules`, `*.tmp`); a pattern with a separator matches the full
     /// path (e.g. `C:\Windows\*`). Matching is case-insensitive.
     pub excludes: Vec<String>,
+    /// Enable the NTFS $MFT fast path when eligible (volume root, NTFS,
+    /// elevated). Default on; ignored (falls back to the walk) when any
+    /// eligibility check fails. See `mft::is_eligible`.
+    pub use_mft_fast_path: bool,
 }
 
 impl ScanOptions {
@@ -95,18 +120,19 @@ impl ScanOptions {
             follow_reparse: false,
             threads: num_cpus().clamp(2, 32),
             excludes: Vec::new(),
+            use_mft_fast_path: true,
         }
     }
 }
 
 /// Compiled exclusion patterns, split into name-globs and full-path-globs.
-struct Excluder {
+pub(crate) struct Excluder {
     name_globs: Vec<String>,
     path_globs: Vec<String>,
 }
 
 impl Excluder {
-    fn new(patterns: &[String]) -> Self {
+    pub(crate) fn new(patterns: &[String]) -> Self {
         let mut name_globs = Vec::new();
         let mut path_globs = Vec::new();
         for p in patterns {
@@ -127,13 +153,13 @@ impl Excluder {
         }
     }
 
-    fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.name_globs.is_empty() && self.path_globs.is_empty()
     }
 
     /// True if `name` (the entry's file name) or `full` (its absolute path)
     /// matches any exclusion pattern.
-    fn excluded(&self, name: &str, full: &str) -> bool {
+    pub(crate) fn excluded(&self, name: &str, full: &str) -> bool {
         let n = name.to_ascii_lowercase();
         if self.name_globs.iter().any(|g| glob_match(g, &n)) {
             return true;
@@ -231,6 +257,49 @@ pub fn scan(
     record_tx: Sender<Record>,
     event_tx: Sender<ScanEvent>,
 ) {
+    // --- NTFS $MFT fast-path dispatch --------------------------------------
+    // Eligibility (spec: volume root + NTFS + elevated + setting on) is
+    // re-checked here, every scan, rather than cached -- it is cheap (a
+    // couple of Win32 calls) and conditions can change between scans (e.g.
+    // the user relaunches elevated, or flips the setting). ANY failure at
+    // ANY stage -- eligibility OR the MFT parse itself -- falls back to the
+    // walk below UNCHANGED; we only ever emit an informational note via the
+    // existing `ScanEvent::Errors` channel (reusing it rather than adding a
+    // new variant that every consumer would need to handle) plus the
+    // `ScanEvent::ModeUsed` pill event. This block is the ONLY change to the
+    // walk's code path -- everything after it is byte-for-byte the v0.1-v0.6
+    // walk.
+    #[cfg(windows)]
+    {
+        match mft::is_eligible(&opts.root, opts.use_mft_fast_path) {
+            Ok(()) => {
+                let _ = event_tx.send(ScanEvent::ModeUsed(ScanMode::Mft));
+                match mft::run(&opts, &cancel, &record_tx, &event_tx) {
+                    Ok(()) => return,
+                    Err(e) => {
+                        // The MFT path can fail partway through (e.g. a read
+                        // error mid-volume); by construction it has not yet
+                        // sent `Done`/`Cancelled`, so falling through to the
+                        // walk below is safe -- the walk emits its own Done.
+                        let _ = event_tx.send(ScanEvent::Errors(vec![format!(
+                            "MFT fast path unavailable ({e}) -- used standard scan"
+                        )]));
+                    }
+                }
+            }
+            Err(_e) => {
+                // Not eligible (not a volume root / not NTFS / not elevated /
+                // disabled by setting) -- this is the common case, not an
+                // error worth a user-visible note; just use the walk.
+            }
+        }
+        let _ = event_tx.send(ScanEvent::ModeUsed(ScanMode::Walk));
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = event_tx.send(ScanEvent::ModeUsed(ScanMode::Walk));
+    }
+
     let start = Instant::now();
     let stats = Arc::new(ScanStats::default());
 

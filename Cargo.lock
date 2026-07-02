@@ -3087,6 +3087,7 @@ version = "0.6.3"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
+ "fileops",
  "parking_lot",
  "rayon",
  "serde",
