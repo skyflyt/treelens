@@ -27,14 +27,14 @@ mod record;
 mod runs;
 
 use crate::{
-    Cancel, Excluder, Progress, Record as ScanRecord, ScanEvent, ScanOptions, FLAG_DIR,
-    FLAG_HIDDEN, FLAG_READONLY, FLAG_SYSTEM, MAX_ERROR_SAMPLES,
+    Cancel, Excluder, Progress, Record as ScanRecord, ScanEvent, ScanOptions,
+    FLAG_CLOUD_PLACEHOLDER, FLAG_DIR, FLAG_HIDDEN, FLAG_READONLY, FLAG_SYSTEM, MAX_ERROR_SAMPLES,
 };
 use boot::{bootstrap, VolumeLayout};
 use crossbeam_channel::Sender;
 use record::{
-    apply_fixups_and_parse_header, dedup_hardlinks, parse_attributes, pick_canonical_name,
-    FileNameAttr, ParsedRecord, RecordHeader,
+    apply_fixups_and_parse_header, dedup_hardlinks, is_cloud_placeholder, parse_attributes,
+    pick_canonical_name, FileNameAttr, ParsedRecord, RecordHeader,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -332,9 +332,14 @@ fn run_with_handle(
 
     // Hard-link dedup: pick one canonical (parent, name) per FRN.
     let mut canonical: HashMap<u64, (u64, String)> = HashMap::new();
+    // File-attribute bits (FILE_ATTRIBUTE_*) come from the FRN's own $FILE_NAME,
+    // not from cross-FRN hard-link dedup -- a cloud placeholder is a property
+    // of the file record itself, so this is keyed independently of `canonical`.
+    let mut frn_attributes: HashMap<u64, u32> = HashMap::new();
     for (frn, entry) in &base_entries {
         if let Some(fna) = pick_canonical_name(&entry.file_names) {
             canonical.insert(*frn, (fna.parent_frn, fna.name.clone()));
+            frn_attributes.insert(*frn, fna.file_attributes);
         }
     }
     // Also fold through the shared dedup helper for FRNs with multiple raw
@@ -366,6 +371,7 @@ fn run_with_handle(
         record_tx,
         &base_entries,
         &canonical,
+        &frn_attributes,
         &stat_fallback_set,
         &mut files_seen,
         &mut dirs_seen,
@@ -412,6 +418,7 @@ fn emit_records(
     record_tx: &Sender<ScanRecord>,
     base_entries: &HashMap<u64, RawEntry>,
     canonical: &HashMap<u64, (u64, String)>,
+    frn_attributes: &HashMap<u64, u32>,
     stat_fallback_set: &std::collections::HashSet<u64>,
     files_seen: &mut u64,
     dirs_seen: &mut u64,
@@ -582,18 +589,43 @@ fn emit_records(
         // does not affect size/count totals, only badge display.
         let _ = (FLAG_HIDDEN, FLAG_READONLY, FLAG_SYSTEM);
 
+        // Cloud placeholder (OneDrive Files-On-Demand & equivalents): the file's
+        // logical size is real but it occupies ~0 bytes locally. Mirrors the walk's
+        // check in `lib.rs` so both scan paths agree on "on disk" totals -- without
+        // this, dehydrated placeholders were counted at full logical size in
+        // allocated/on-disk mode because the $DATA attribute's allocated-size field
+        // is not a reliable signal for reparse-point placeholders on its own.
+        let is_placeholder = frn_attributes
+            .get(frn)
+            .copied()
+            .map(is_cloud_placeholder)
+            .unwrap_or(false);
+        if is_placeholder {
+            flags |= FLAG_CLOUD_PLACEHOLDER;
+        }
+
         let mut mtime = filetime_to_unix(entry.parsed.mtime_100ns.unwrap_or(0));
         let mut logical = entry.parsed.logical_size;
-        let mut allocated = entry.parsed.allocated_size;
+        let mut allocated = if is_placeholder {
+            0
+        } else {
+            entry.parsed.allocated_size
+        };
 
         // Per-file stat fallback (spec: $ATTRIBUTE_LIST common-case miss ->
         // GetFileAttributesEx/NtQueryInformationFile-equivalent stat for just
-        // this file). std::fs::metadata is the portable equivalent of
-        // GetFileAttributesEx here and avoids a second raw Win32 binding for
-        // a rare, non-hot-path case. If the stat also fails, keep whatever
-        // (possibly incomplete) values the MFT parse produced and count the
-        // file in the inaccessible-items report, matching the spec's
-        // "count it in the inaccessible-items report if that fails too."
+        // this file). std::fs::metadata gives us logical size + mtime (portable
+        // equivalent of GetFileAttributesEx) but NOT true on-disk size for
+        // sparse/compressed/placeholder files -- that requires
+        // GetCompressedFileSizeW, which (like metadata()) does not hydrate a
+        // cloud placeholder. This matches the walk's on-disk semantics exactly
+        // instead of the previous `align_up(logical_size, cluster_size)`, which
+        // silently assumed allocated == logical rounded up and over-counted any
+        // sparse/placeholder file caught by this fallback. If the stat also
+        // fails, keep whatever (possibly incomplete) values the MFT parse
+        // produced and count the file in the inaccessible-items report,
+        // matching the spec's "count it in the inaccessible-items report if
+        // that fails too."
         if stat_fallback_set.contains(frn) {
             let full_rel = path_cache.get(frn).cloned().unwrap_or_else(|| name.clone());
             let full_abs = format!("{}{}", opts.root.to_string_lossy(), full_rel);
@@ -601,7 +633,22 @@ fn emit_records(
                 Ok(meta) => {
                     if !entry.is_dir {
                         logical = meta.len();
-                        allocated = crate::align_up(logical, opts.cluster_size);
+                        #[cfg(windows)]
+                        {
+                            use std::os::windows::fs::MetadataExt;
+                            let placeholder_now = is_cloud_placeholder(meta.file_attributes());
+                            if placeholder_now {
+                                flags |= FLAG_CLOUD_PLACEHOLDER;
+                                allocated = 0;
+                            } else {
+                                allocated = compressed_file_size(&full_abs)
+                                    .unwrap_or_else(|| crate::align_up(logical, opts.cluster_size));
+                            }
+                        }
+                        #[cfg(not(windows))]
+                        {
+                            allocated = crate::align_up(logical, opts.cluster_size);
+                        }
                     }
                     if let Ok(modified) = meta.modified() {
                         if let Ok(secs) = modified.duration_since(std::time::UNIX_EPOCH) {
@@ -642,6 +689,28 @@ fn emit_records(
 fn filetime_to_unix(ticks_100ns: i64) -> i64 {
     const EPOCH_DIFF_100NS: i64 = 116_444_736_000_000_000; // 1601 -> 1970 in 100ns units
     (ticks_100ns - EPOCH_DIFF_100NS) / 10_000_000
+}
+/// True on-disk size of a file via `GetCompressedFileSizeW`, which reports
+/// the real allocated size for sparse, compressed, and cloud-placeholder
+/// files (unlike `std::fs::metadata().len()`, which is always the logical
+/// size). Like `metadata()`, this call does NOT hydrate a cloud placeholder --
+/// it only reads on-disk allocation metadata. Returns `None` on any Win32
+/// error (caller falls back to `align_up(logical, cluster_size)`).
+#[cfg(windows)]
+fn compressed_file_size(path: &str) -> Option<u64> {
+    use windows::Win32::Storage::FileSystem::GetCompressedFileSizeW;
+    let wpath: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut high: u32 = 0;
+    let low = unsafe { GetCompressedFileSizeW(PCWSTR(wpath.as_ptr()), Some(&mut high)) };
+    if low == u32::MAX {
+        // INVALID_FILE_SIZE -- check GetLastError in spirit; windows-rs surfaces
+        // failures for FFI calls like this via the return value only, so treat
+        // MAX as failure (real files this large are not on any real volume with
+        // 4KiB clusters without a genuinely huge run count, and even then this
+        // is only a size hint -- the caller has a safe fallback).
+        return None;
+    }
+    Some(((high as u64) << 32) | low as u64)
 }
 
 fn read_at(handle: HANDLE, offset: u64, buf: &mut [u8]) -> Result<(), String> {

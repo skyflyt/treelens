@@ -246,6 +246,28 @@ pub struct FileNameAttr {
     pub parent_frn: u64, // MFT record number of the parent (low 48 bits already masked)
     pub name: String,
     pub namespace: Namespace,
+    /// Raw Win32 `FILE_ATTRIBUTE_*` bits from the $FILE_NAME body (offset
+    /// 0x38). Used to detect cloud placeholders (OneDrive Files-On-Demand,
+    /// etc.) the same way the directory walk does via `GetFileAttributes`.
+    pub file_attributes: u32,
+}
+
+/// FILE_ATTRIBUTE_OFFLINE -- data has been physically moved off-box.
+const FILE_ATTRIBUTE_OFFLINE: u32 = 0x0000_1000;
+/// FILE_ATTRIBUTE_RECALL_ON_OPEN -- placeholder that hydrates on open.
+const FILE_ATTRIBUTE_RECALL_ON_OPEN: u32 = 0x0004_0000;
+/// FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS -- placeholder that hydrates on data access.
+const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
+
+/// True if `attrs` (raw Win32 FILE_ATTRIBUTE_* bits) mark a cloud-placeholder
+/// file (OneDrive Files-On-Demand & equivalents) -- mirrors the check in the
+/// directory walk (`lib.rs` worker: `a & 0x1000 != 0 || a & 0x400000 != 0 ||
+/// a & 0x40000 != 0`) so both scan paths agree on which files are "not
+/// actually on local disk".
+pub fn is_cloud_placeholder(attrs: u32) -> bool {
+    attrs & FILE_ATTRIBUTE_OFFLINE != 0
+        || attrs & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS != 0
+        || attrs & FILE_ATTRIBUTE_RECALL_ON_OPEN != 0
 }
 
 /// Everything extracted from a single base FILE record (after merging any
@@ -322,6 +344,7 @@ fn parse_file_name_attr(body: &[u8]) -> Option<FileNameAttr> {
     }
     let parent_ref = u64::from_le_bytes(body[0..8].try_into().unwrap());
     let parent_frn = parent_ref & 0x0000_FFFF_FFFF_FFFF;
+    let file_attributes = u32::from_le_bytes(body[0x38..0x3C].try_into().unwrap());
     let name_len_chars = body[0x40] as usize;
     let namespace = Namespace::from_u8(body[0x41])?;
     let name_bytes_start = 0x42;
@@ -338,6 +361,7 @@ fn parse_file_name_attr(body: &[u8]) -> Option<FileNameAttr> {
         parent_frn,
         name,
         namespace,
+        file_attributes,
     })
 }
 
@@ -454,6 +478,29 @@ mod tests {
         a[0x10..0x14].copy_from_slice(&(value.len() as u32).to_le_bytes());
         a[0x14..0x16].copy_from_slice(&value_off.to_le_bytes());
         a[value_off as usize..value_off as usize + value.len()].copy_from_slice(value);
+        a
+    }
+
+    /// Build a minimal non-resident `$DATA` attribute header (no real backing
+    /// mapping-pairs run data needed for these unit tests -- just a valid
+    /// 1-byte sparse-or-real run terminator so the mapping-pairs bytes parse
+    /// cleanly if a caller decodes them). `allocated_size`/`real_size` are the
+    /// two header fields the MFT fast path reads directly for on-disk vs
+    /// logical size.
+    fn non_resident_data_attr_header(allocated_size: u64, real_size: u64) -> Vec<u8> {
+        let mp_offset: u16 = 0x40;
+        let mapping_pairs = [0x00u8]; // empty run list (terminator only)
+        let attr_len = (mp_offset as usize + mapping_pairs.len()).next_multiple_of(8) as u32;
+        let mut a = vec![0u8; attr_len as usize];
+        a[0..4].copy_from_slice(&ATTR_DATA.to_le_bytes());
+        a[4..8].copy_from_slice(&attr_len.to_le_bytes());
+        a[8] = 1; // non-resident
+        a[9] = 0; // name_len_chars (unnamed stream)
+        a[0x20..0x22].copy_from_slice(&mp_offset.to_le_bytes());
+        a[0x28..0x30].copy_from_slice(&allocated_size.to_le_bytes());
+        a[0x30..0x38].copy_from_slice(&real_size.to_le_bytes());
+        a[mp_offset as usize..mp_offset as usize + mapping_pairs.len()]
+            .copy_from_slice(&mapping_pairs);
         a
     }
 
@@ -586,6 +633,91 @@ mod tests {
     }
 
     #[test]
+    fn sparse_non_resident_data_reports_allocated_far_below_real_size() {
+        // Simulates a dehydrated OneDrive Files-On-Demand placeholder: the
+        // file's logical (real) size is large but almost nothing is actually
+        // allocated on disk. The $DATA attribute header carries both values
+        // independently -- this is the field the MFT fast path must read for
+        // "on disk" size, never falling back to the logical size.
+        let mut attrs = Vec::new();
+        let real_size: u64 = 50 * 1024 * 1024; // 50 MiB logical
+        let allocated_size: u64 = 4096; // 1 cluster actually resident locally
+        attrs.extend(non_resident_data_attr_header(allocated_size, real_size));
+        attrs.extend(end_marker());
+        let mut buf = build_record(RECORD_FLAG_IN_USE, 0, &attrs);
+        let header = apply_fixups_and_parse_header(&mut buf).unwrap();
+        let parsed = parse_attributes(&buf, header.first_attr_offset as usize).unwrap();
+        assert!(parsed.has_data_attr);
+        assert_eq!(
+            parsed.logical_size, real_size,
+            "logical size must stay the full/real size"
+        );
+        assert_eq!(
+            parsed.allocated_size, allocated_size,
+            "allocated size must come from the non-resident attribute header, not real_size"
+        );
+        assert_ne!(
+            parsed.allocated_size, parsed.logical_size,
+            "sparse/placeholder file: allocated must NOT collapse to logical size"
+        );
+    }
+
+    #[test]
+    fn reparse_point_file_name_flags_are_extracted_for_cloud_placeholder_detection() {
+        // $FILE_NAME carries the Win32 FILE_ATTRIBUTE_* bits (offset 0x38).
+        // FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS (0x400000) is one of the bits
+        // OneDrive Files-On-Demand sets on a dehydrated placeholder's reparse
+        // point; the parser must surface it via `file_attributes` so the MFT
+        // path can zero "on disk" size for these files exactly like the walk.
+        const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
+        let mut body = file_name_value(5, "cloud-file.txt", 1); // Win32 namespace
+        body[0x38..0x3C].copy_from_slice(&FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.to_le_bytes());
+        let fna = parse_file_name_attr(&body).unwrap();
+        assert_eq!(fna.file_attributes, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS);
+        assert!(is_cloud_placeholder(fna.file_attributes));
+    }
+
+    #[test]
+    fn ordinary_local_file_is_not_flagged_as_cloud_placeholder() {
+        let body = file_name_value(5, "local-file.txt", 1);
+        let fna = parse_file_name_attr(&body).unwrap();
+        assert_eq!(fna.file_attributes, 0);
+        assert!(!is_cloud_placeholder(fna.file_attributes));
+    }
+
+    #[test]
+    fn resident_data_attribute_is_never_treated_as_placeholder_by_size_alone() {
+        // Resident $DATA (tiny files living inside the MFT record itself):
+        // logical and allocated are both the resident byte count -- there is
+        // no separate "allocated size" field to misread for these, but this
+        // guards the invariant explicitly so a future refactor can't silently
+        // start pulling a bogus allocated size for resident data.
+        let mut attrs = Vec::new();
+        let data = vec![0x11u8; 8];
+        attrs.extend(resident_attr_header(ATTR_DATA, &data));
+        attrs.extend(end_marker());
+        let mut buf = build_record(RECORD_FLAG_IN_USE, 0, &attrs);
+        let header = apply_fixups_and_parse_header(&mut buf).unwrap();
+        let parsed = parse_attributes(&buf, header.first_attr_offset as usize).unwrap();
+        assert_eq!(parsed.logical_size, 8);
+        assert_eq!(parsed.allocated_size, 8);
+    }
+
+    #[test]
+    fn is_cloud_placeholder_checks_each_relevant_bit() {
+        const OFFLINE: u32 = 0x0000_1000;
+        const RECALL_ON_OPEN: u32 = 0x0004_0000;
+        const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
+        const READONLY: u32 = 0x0000_0001;
+        assert!(is_cloud_placeholder(OFFLINE));
+        assert!(is_cloud_placeholder(RECALL_ON_OPEN));
+        assert!(is_cloud_placeholder(RECALL_ON_DATA_ACCESS));
+        assert!(is_cloud_placeholder(OFFLINE | READONLY));
+        assert!(!is_cloud_placeholder(READONLY));
+        assert!(!is_cloud_placeholder(0));
+    }
+
+    #[test]
     fn detects_attribute_list_presence() {
         let mut attrs = Vec::new();
         attrs.extend(resident_attr_header(ATTR_ATTRIBUTE_LIST, &[0u8; 8]));
@@ -602,16 +734,19 @@ mod tests {
             parent_frn: 10,
             name: "OLDNAME~1".into(),
             namespace: Namespace::Dos,
+            file_attributes: 0,
         };
         let win32_a = FileNameAttr {
             parent_frn: 10,
             name: "First Link.txt".into(),
             namespace: Namespace::Win32,
+            file_attributes: 0,
         };
         let win32_b = FileNameAttr {
             parent_frn: 20,
             name: "Second Link.txt".into(),
             namespace: Namespace::Win32,
+            file_attributes: 0,
         };
         let frn = 99u64;
         let entries = vec![(frn, &dos), (frn, &win32_a), (frn, &win32_b)];
