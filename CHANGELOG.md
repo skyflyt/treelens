@@ -4,6 +4,42 @@ All notable changes to Treelens are documented here.
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning is [SemVer](https://semver.org/) (0.x while pre-1.0).
 
+## [0.7.0] -- 2026-07-01
+
+### Added
+- **NTFS `$MFT` fast path.** Elevated whole-volume scans (e.g. `C:\`) on an
+  NTFS drive now parse the `$MFT` directly instead of walking the directory
+  tree -- an order-of-magnitude speedup on large volumes. Eligibility is
+  checked fresh on every scan: target must be a volume root, the filesystem
+  must report NTFS, the process must be elevated, and the new "Use NTFS
+  `$MFT` fast path" setting (Settings panel, on by default) must be enabled.
+  Any failure at any stage -- ineligible, or an error partway through the
+  parse -- falls back to the existing directory walk silently, with an
+  informational note if the fast path was attempted and failed. New
+  `crates/scanner/src/mft/` module: data-run decoder (`runs.rs`), FILE
+  record + USA-fixup + attribute parsing (`record.rs`), volume bootstrap via
+  `FSCTL_GET_NTFS_VOLUME_DATA` (`boot.rs`), and orchestration/eligibility
+  (`mod.rs`). Emits the exact same `Record`/`Progress`/`ScanEvent` stream as
+  the walk, so the tree/UI layers needed no changes beyond the new pill.
+- **Scan-mode status pill** ("MFT" / "Walk") shows which strategy actually
+  produced the currently-loaded tree.
+- Elevation banner now reads "Switch to admin for full visibility + MFT-speed
+  whole-drive scans" (previously promised a "future" speedup that didn't
+  exist yet).
+
+### Testing
+- 34 new unit tests (data-run decoding incl. sparse runs and negative/
+  multi-byte signed offsets, USA fixup application and corruption detection,
+  attribute parsing against synthetic hand-built FILE-record byte fixtures,
+  hard-link dedup, Win32-namespace preference) run unelevated in CI.
+- A 3-test `#[ignore]`-gated integration suite
+  (`crates/scanner/tests/mft_integration.rs`) scans a real NTFS volume via
+  the MFT path, cross-checks file count/logical size against a walk of a
+  controlled subtree, and verifies cancellation -- run locally, elevated,
+  explicitly; not part of CI.
+
+[0.7.0]: https://github.com/skyflyt/treelens/releases/tag/v0.7.0
+
 ## [0.6.3] — 2026-06-14
 
 ### Fixed
