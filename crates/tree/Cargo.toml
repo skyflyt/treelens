@@ -11,7 +11,7 @@ parking_lot.workspace = true
 scanner = { path = "../scanner" }
 
 [dev-dependencies]
-criterion = { version = "0.5", default-features = false }
+criterion = { version = "0.8", default-features = false }
 
 [[bench]]
 name = "build"
